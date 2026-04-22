@@ -1,0 +1,9 @@
+{
+  "/forecast/page": "app/forecast/page.js",
+  "/projects/page": "app/projects/page.js",
+  "/reports/page": "app/reports/page.js",
+  "/projects/new/page": "app/projects/new/page.js",
+  "/assumptions/page": "app/assumptions/page.js",
+  "/snapshots/page": "app/snapshots/page.js",
+  "/keywords/page": "app/keywords/page.js"
+}
