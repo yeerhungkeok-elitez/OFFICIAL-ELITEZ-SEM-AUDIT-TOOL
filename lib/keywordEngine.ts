@@ -45,6 +45,15 @@ export interface EnrichedKeyword extends Keyword {
   estimatedLeads: number;
   estimatedCpl: number;
   revenuePotential: number;
+  roas: number;
+  // Extended forecast fields populated by the upgraded engine
+  estimatedImpressions?: number;
+  estimatedPosition?: number;
+  impressionShare?: number;
+  confidenceLevel?: "High" | "Medium" | "Low";
+  effectiveCpcFinal?: number;
+  estimatedCtr?: number;
+  estimatedCvr?: number;
 }
 
 /** Country-level aggregation produced by buildCountryForecasts(). */
@@ -64,7 +73,7 @@ export interface CountryForecast {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const KEYWORD_COUNTRIES = ["Singapore", "Malaysia", "Vietnam", "Thailand"] as const;
+export const KEYWORD_COUNTRIES = ["Singapore", "Malaysia", "Vietnam", "Thailand", "Indonesia"] as const;
 
 /** Default fraction of leads that qualify as Sales Qualified Leads. */
 export const SQL_RATE = 0.5;

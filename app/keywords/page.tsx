@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 import Link from "next/link";
 import {
   Search, Globe, Info, Settings2, Plus, Trash2, Ban,
   ShoppingCart, FlaskConical, Pencil, X, Package, Wand2, CheckCheck,
   Layers, FolderKanban, ChevronDown, ChevronRight, EyeOff, Eye, MinusCircle,
-  Download,
+  Download, ChevronUp, Shield,
 } from "lucide-react";
 import {
   projectToAssumptions,
@@ -42,6 +42,8 @@ import {
   type KeywordSource,
   type KeywordCategory,
   type ProjectContext,
+  type ProjectProfile,
+  type UserKeywordInputs,
   buildWorkspaceKeywords,
   getLibraryKeywords,
   saveLibraryKeywords,
@@ -53,6 +55,8 @@ import {
   generateKeywords,
   PRESET_PACKS,
   buildPresetPackKeywords,
+  buildDynamicCampaignKeywords,
+  generateStarterKeywordsForProject,
   addedPackNames,
   LIBRARY_COUNTRIES,
 } from "@/lib/keywordLibrary";
@@ -78,7 +82,6 @@ import {
   updateAdGroup,
   deleteAdGroup,
 } from "@/lib/campaignStore";
-import { buildCampaignTypeKeywords } from "@/lib/keywordLibrary";
 import {
   type NegativeKeyword,
   type NegLevel,
@@ -169,6 +172,53 @@ const SOURCE_LABELS: Record<KeywordSource, string> = {
   generated:   "Generated",
   recommended: "Recommended",
   imported:    "Imported",
+};
+
+// ─── Keyword bucket definitions ───────────────────────────────────────────────
+
+type BucketColor = "violet" | "blue" | "emerald" | "orange" | "yellow" | "teal";
+
+interface BucketDef {
+  id:            string;
+  label:         string;
+  description:   string;
+  categories:    KeywordCategory[];
+  campaignTypes: CampaignType[];
+  color:         BucketColor;
+}
+
+const BUCKETS: BucketDef[] = [
+  { id: "brand",      label: "Brand",             description: "Protect your brand and capture existing demand.",      categories: ["brand"],                       campaignTypes: ["brand"],          color: "violet"  },
+  { id: "generic",    label: "Generic / Service",  description: "Core service discovery — buyers comparing options.",   categories: ["commercial","problem-aware"],  campaignTypes: ["generic","niche"], color: "blue"    },
+  { id: "highIntent", label: "High Intent",        description: "Ready-to-act searches from bottom-funnel buyers.",     categories: ["purchase","urgent"],            campaignTypes: ["high-intent"],    color: "emerald" },
+  { id: "competitor", label: "Competitor",         description: "Comparison and conquesting — displace rival traffic.", categories: ["competitor"],                   campaignTypes: ["competitor"],     color: "orange"  },
+  { id: "pricing",    label: "Pricing / Cost",     description: "Cost-sensitive searchers evaluating price and value.", categories: ["comparison"],                   campaignTypes: ["pricing"],        color: "yellow"  },
+  { id: "local",      label: "Local / Geo",        description: "Location-based searches from nearby buyers.",          categories: ["local"],                        campaignTypes: ["local"],          color: "teal"    },
+];
+
+const BUCKET_HEADER_CLS: Record<BucketColor, string> = {
+  violet:  "bg-violet-50 border-violet-200",
+  blue:    "bg-blue-50 border-blue-200",
+  emerald: "bg-emerald-50 border-emerald-200",
+  orange:  "bg-orange-50 border-orange-200",
+  yellow:  "bg-yellow-50 border-yellow-200",
+  teal:    "bg-teal-50 border-teal-200",
+};
+const BUCKET_BADGE_CLS: Record<BucketColor, string> = {
+  violet:  "bg-violet-100 text-violet-700",
+  blue:    "bg-blue-100 text-blue-700",
+  emerald: "bg-emerald-100 text-emerald-700",
+  orange:  "bg-orange-100 text-orange-700",
+  yellow:  "bg-yellow-100 text-yellow-700",
+  teal:    "bg-teal-100 text-teal-700",
+};
+const BUCKET_DOT_CLS: Record<BucketColor, string> = {
+  violet:  "bg-violet-400",
+  blue:    "bg-blue-400",
+  emerald: "bg-emerald-400",
+  orange:  "bg-orange-400",
+  yellow:  "bg-yellow-400",
+  teal:    "bg-teal-400",
 };
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
@@ -635,14 +685,18 @@ function GeneratorPanel({
   targetCountries,
   onAdd,
   onClose,
+  defaultBrand = "",
+  defaultOffer = "",
 }: {
   targetCountries: string[];
   onAdd: (kws: LibraryKeyword[]) => void;
   onClose: () => void;
+  defaultBrand?: string;
+  defaultOffer?: string;
 }) {
   const [step,            setStep]           = useState<"form" | "results">("form");
-  const [brandName,       setBrandName]      = useState("");
-  const [primaryOffer,    setPrimaryOffer]   = useState("");
+  const [brandName,       setBrandName]      = useState(defaultBrand);
+  const [primaryOffer,    setPrimaryOffer]   = useState(defaultOffer);
   const [secondaryOffer,  setSecondaryOffer] = useState("");
   const [competitors,     setCompetitors]    = useState("");
   const [problemsSolved,  setProblems]       = useState("");
@@ -1324,6 +1378,45 @@ function CampaignManagerPanel({
                       + Add Ad Group
                     </button>
                   )}
+
+                  {/* Keyword generation inputs (editable after creation) */}
+                  <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Keyword Generation Inputs</p>
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Services / Keyword Base</label>
+                      <input
+                        type="text"
+                        defaultValue={c.keywordBase ?? ""}
+                        onBlur={(e) => updateCampaign(c.id, { keywordBase: e.target.value.trim() || undefined })}
+                        placeholder="e.g. EOR, Headhunting, Payroll"
+                        className={`${inputCls} text-xs w-full`}
+                      />
+                    </div>
+                    {(c.campaignType === "high-intent") && (
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">Target Actions</label>
+                        <input
+                          type="text"
+                          defaultValue={c.targetActions ?? ""}
+                          onBlur={(e) => updateCampaign(c.id, { targetActions: e.target.value.trim() || undefined })}
+                          placeholder="e.g. hire, find, need, get"
+                          className={`${inputCls} text-xs w-full`}
+                        />
+                      </div>
+                    )}
+                    {(c.campaignType === "competitor") && (
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1">Competitors</label>
+                        <input
+                          type="text"
+                          defaultValue={c.competitors ?? ""}
+                          onBlur={(e) => updateCampaign(c.id, { competitors: e.target.value.trim() || undefined })}
+                          placeholder="e.g. Competitor A, Competitor B"
+                          className={`${inputCls} text-xs w-full`}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1351,6 +1444,7 @@ interface GroupRollup {
   convs:     number;
   cpa:       number;
   revenue:   number;
+  roas:      number;
 }
 
 function computeRollup(kws: EnrichedWorkspaceKeyword[]): GroupRollup {
@@ -1360,16 +1454,17 @@ function computeRollup(kws: EnrichedWorkspaceKeyword[]): GroupRollup {
   const clicks  = kws.reduce((s, k) => s + k.estimatedClicks, 0);
   const convs   = kws.reduce((s, k) => s + k.estimatedLeads, 0);
   const revenue = kws.reduce((s, k) => s + k.revenuePotential, 0);
+  const roas    = budget > 0 ? +(revenue / budget).toFixed(2) : 0;
   return {
     kwCount: kws.length, buyCount: buy.length, testCount: test.length,
-    budget, clicks, convs, cpa: convs > 0 ? Math.round(budget / convs) : 0, revenue,
+    budget, clicks, convs, cpa: convs > 0 ? Math.round(budget / convs) : 0, revenue, roas,
   };
 }
 
 function RollupBadge({
   r,
   budgetMode,
-  manualBudget,
+  manualBudget: _manualBudget,
   totalBudget,
 }: {
   r:             GroupRollup;
@@ -1401,6 +1496,7 @@ function RollupBadge({
       {r.convs > 0  && <span><span className="font-semibold text-emerald-600">{r.convs}</span> conv</span>}
       {r.cpa > 0    && <span>CPA <span className="font-semibold text-slate-700">${r.cpa.toLocaleString()}</span></span>}
       {r.revenue > 0 && <span>Rev <span className="font-semibold text-brand-600">${r.revenue.toLocaleString()}</span></span>}
+      {r.roas > 0   && <span>ROAS <span className="font-semibold text-violet-600">{r.roas.toFixed(1)}×</span></span>}
     </div>
   );
 }
@@ -1610,7 +1706,7 @@ function NegativeKeywordsPanel({
   campaigns,
   adGroups,
   initialText,
-  onClose,
+  onClose: _onClose,
   onChange,
 }: {
   negatives:    NegativeKeyword[];
@@ -1941,27 +2037,66 @@ function NegativeKeywordsPanel({
 
 // ─── Create Campaign Modal ────────────────────────────────────────────────────
 
-const CAMPAIGN_TYPES: CampaignType[] = ["brand", "generic", "high-intent", "competitor", "custom"];
+const CAMPAIGN_TYPES: CampaignType[] = ["brand", "generic", "high-intent", "competitor", "pricing", "local", "niche", "custom"];
 
 type AdGroupDef = { name: string; groupType: AdGroupType; checked: boolean };
 
 function CreateCampaignModal({
   onConfirm,
   onClose,
+  targetCountries,
+  profile,
 }: {
-  onConfirm: (name: string, type: CampaignType, kws: LibraryKeyword[], adGroups: Array<{ name: string; groupType: AdGroupType }>) => void;
+  onConfirm: (
+    name:     string,
+    type:     CampaignType,
+    kws:      LibraryKeyword[],
+    adGroups: Array<{ name: string; groupType: AdGroupType }>,
+    extras:   { keywordBase?: string; targetActions?: string; competitors?: string },
+  ) => void;
   onClose: () => void;
+  targetCountries: string[];
+  profile: ProjectProfile;
 }) {
-  const [step,         setStep]         = useState<1 | 2 | 3>(1);
-  const [selectedType, setSelectedType] = useState<CampaignType | null>(null);
-  const [name,         setName]         = useState("");
-  const [starterKws,   setStarterKws]   = useState<LibraryKeyword[]>([]);
-  const [agDefs,       setAgDefs]       = useState<AdGroupDef[]>([]);
+  const [step,          setStep]         = useState<1 | 2 | 3>(1);
+  const [selectedType,  setSelectedType] = useState<CampaignType | null>(null);
+  const [name,          setName]         = useState("");
+  const [starterKws,    setStarterKws]   = useState<LibraryKeyword[]>([]);
+  const [agDefs,        setAgDefs]       = useState<AdGroupDef[]>([]);
+  // User-controlled keyword inputs
+  const [keywordBase,   setKeywordBase]  = useState("");   // comma-separated services
+  const [targetActions, setTargetActions] = useState("");  // comma-separated actions (high-intent)
+  const [competitors,   setCompetitors]  = useState("");   // comma-separated competitors
+
+  function parseCommaList(raw: string): string[] {
+    return raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  function buildUserInputs(): UserKeywordInputs {
+    return {
+      services:    parseCommaList(keywordBase),
+      actions:     parseCommaList(targetActions),
+      competitors: parseCommaList(competitors),
+    };
+  }
+
+  function regenerateKeywords(type: CampaignType, overrideBase?: string, overrideActions?: string, overrideComps?: string) {
+    const tempId   = "preview-" + Date.now();
+    const countries = targetCountries.length > 0 ? targetCountries : ["Singapore"];
+    const ui: UserKeywordInputs = {
+      services:    parseCommaList(overrideBase    ?? keywordBase),
+      actions:     parseCommaList(overrideActions ?? targetActions),
+      competitors: parseCommaList(overrideComps   ?? competitors),
+    };
+    setStarterKws(buildDynamicCampaignKeywords(type, tempId, profile, countries, ui));
+  }
 
   function handleTypeSelect(type: CampaignType) {
     setSelectedType(type);
-    const tempId = "preview-" + Date.now();
-    setStarterKws(buildCampaignTypeKeywords(type, tempId));
+    const tempId    = "preview-" + Date.now();
+    const countries = targetCountries.length > 0 ? targetCountries : ["Singapore"];
+    // Initial generation uses profile fallback; user refines via the inputs
+    setStarterKws(buildDynamicCampaignKeywords(type, tempId, profile, countries));
     setName(CAMPAIGN_TYPE_LABELS[type] + " Campaign");
     const suggestions = CAMPAIGN_TYPE_AD_GROUP_SUGGESTIONS[type] ?? [];
     setAgDefs(suggestions.map((s) => ({ ...s, checked: true })));
@@ -1979,10 +2114,17 @@ function CreateCampaignModal({
   function handleConfirm() {
     if (!selectedType || !name.trim()) return;
     const selectedAgs = agDefs.filter((d) => d.checked).map(({ name: n, groupType }) => ({ name: n, groupType }));
-    onConfirm(name.trim(), selectedType, starterKws, selectedAgs);
+    const ui = buildUserInputs();
+    onConfirm(name.trim(), selectedType, starterKws, selectedAgs, {
+      keywordBase:   ui.services?.join(", ")   || undefined,
+      targetActions: ui.actions?.join(", ")    || undefined,
+      competitors:   ui.competitors?.join(", ") || undefined,
+    });
   }
 
   const stepLabels = ["Campaign type", "Keywords", "Ad groups"];
+  const showActions     = selectedType === "high-intent";
+  const showCompetitors = selectedType === "competitor";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -2050,6 +2192,65 @@ function CreateCampaignModal({
                   autoFocus
                 />
               </div>
+              {/* Keyword generation inputs */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                <p className="text-xs font-semibold text-slate-600">Keyword Generation</p>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-500 block mb-1">
+                    Services / Keyword Base
+                    <span className="text-slate-400 font-normal ml-1">(comma-separated — e.g. EOR, Headhunting, Payroll)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={keywordBase}
+                    onChange={(e) => setKeywordBase(e.target.value)}
+                    placeholder={profile.offer || profile.brand || "Your services…"}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  />
+                </div>
+
+                {showActions && (
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 block mb-1">
+                      Target Actions
+                      <span className="text-slate-400 font-normal ml-1">(e.g. hire, find, need, get)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={targetActions}
+                      onChange={(e) => setTargetActions(e.target.value)}
+                      placeholder="hire, find, need, get…"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    />
+                  </div>
+                )}
+
+                {showCompetitors && (
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 block mb-1">
+                      Competitors
+                      <span className="text-slate-400 font-normal ml-1">(comma-separated competitor names)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={competitors}
+                      onChange={(e) => setCompetitors(e.target.value)}
+                      placeholder="Competitor A, Competitor B…"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    />
+                  </div>
+                )}
+
+                <button
+                  onClick={() => selectedType && regenerateKeywords(selectedType)}
+                  disabled={!selectedType}
+                  className="w-full px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold disabled:opacity-40 transition-colors"
+                >
+                  ↻ Regenerate Keywords
+                </button>
+              </div>
+
               {starterKws.length > 0 ? (
                 <div>
                   <p className="text-xs font-semibold text-slate-600 mb-2">
@@ -2451,6 +2652,604 @@ const ALL_ACTIONS  = ["Buy", "Test", "No"] as const;
 const ALL_SOURCES  = ["System", "Custom", "Preset", "Generated", "Recommended", "Imported"] as const;
 const ALL_CATEGORIES = Object.entries(CATEGORY_LABELS).map(([k, v]) => ({ value: k, label: v }));
 
+// ─── Competitor Intelligence helpers ─────────────────────────────────────────
+
+function deriveCompetitivenessScore(kw: EnrichedWorkspaceKeyword): number {
+  if (kw.competitorPressureScore > 0) return Math.round(kw.competitorPressureScore);
+  let score = 0;
+  score += kw.competition === "High" ? 40 : kw.competition === "Medium" ? 25 : 10;
+  score += kw.suggestedCpc >= 10 ? 30 : kw.suggestedCpc >= 5 ? 20 : kw.suggestedCpc >= 2 ? 10 : 4;
+  score += (kw.intent === "Transactional") ? 20
+         : (kw.intent === "Commercial") ? 15
+         : (kw.intent === "Navigational") ? 10
+         : 5;
+  return Math.min(score, 100);
+}
+
+const BUCKET_STRATEGIES: Record<string, string> = {
+  brand:      "Defend with Exact match. Add sitelinks and structured snippets. Keep bids efficient — protect without overpaying.",
+  generic:    "Phrase + Exact match with benefit-led landing pages. Lead with your strongest differentiator.",
+  highIntent: "Bid aggressively. Use direct CTA copy (Get Quote, Start Today). Maximise Quality Score on conversion pages.",
+  competitor: "Comparison landing page. Focus ad copy on your advantages, not their brand name. Use RLSA to recapture defectors.",
+  pricing:    "Be transparent. Use a free quote or consultation CTA. Target buyers who compare on cost.",
+  local:      "Location-specific landing pages. Include city or region in ad copy. Enable location extensions.",
+};
+
+const PRESSURE_BADGE_CLS: Record<string, string> = {
+  High:   "bg-red-100 text-red-700",
+  Medium: "bg-amber-100 text-amber-700",
+  Low:    "bg-emerald-100 text-emerald-700",
+};
+
+// Confidence badge colours
+const CONFIDENCE_CLS: Record<"High" | "Medium" | "Low", string> = {
+  High:   "bg-red-50 text-red-600 border border-red-200",
+  Medium: "bg-amber-50 text-amber-600 border border-amber-200",
+  Low:    "bg-slate-100 text-slate-400 border border-slate-200",
+};
+
+interface CompetitorData {
+  names:      string[];       // competitor names to render as pills
+  overflow:   number;         // count hidden by "+N more"
+  confidence: "High" | "Medium" | "Low";
+  brandNote:  string | null;  // extra note for brand keywords
+}
+
+function buildCompetitorData(
+  kw:        EnrichedWorkspaceKeyword,
+  userComps: string[],
+  bucketId:  string,
+): CompetitorData {
+  const pressureScore = kw.competitorPressureScore ?? 50;
+  // More competitors shown when pressure is higher — more crowded auction
+  const maxShown = pressureScore >= 70 ? 4 : pressureScore >= 40 ? 3 : 2;
+
+  const fromKw = kw.competitorExamples.filter(Boolean);
+
+  if (bucketId === "competitor") {
+    // Try to detect competitor name inside the keyword text itself
+    const kwLower   = kw.keyword.toLowerCase();
+    const detected  = userComps.filter((c) => kwLower.includes(c.toLowerCase()));
+    const pool      = Array.from(new Set([...detected, ...fromKw, ...userComps]));
+    const shown     = pool.slice(0, maxShown);
+    return {
+      names:      shown,
+      overflow:   Math.max(0, pool.length - maxShown),
+      confidence: detected.length > 0 || fromKw.length > 0 ? "High" : userComps.length > 0 ? "Medium" : "Low",
+      brandNote:  null,
+    };
+  }
+
+  if (bucketId === "brand") {
+    const pool  = Array.from(new Set([...fromKw, ...userComps])).filter(Boolean);
+    const shown = pool.slice(0, 2);
+    if (pool.length === 0) {
+      return { names: [], overflow: 0, confidence: "Low", brandNote: "Low external competition — brand-protected" };
+    }
+    return {
+      names:      shown,
+      overflow:   Math.max(0, pool.length - 2),
+      confidence: "Medium",
+      brandNote:  "may bid on brand",
+    };
+  }
+
+  // Generic / High Intent / Pricing / Local
+  const pool  = Array.from(new Set([...fromKw, ...userComps])).filter(Boolean);
+  const shown = pool.slice(0, maxShown);
+  return {
+    names:      shown,
+    overflow:   Math.max(0, pool.length - maxShown),
+    confidence: fromKw.length > 0 ? "High" : userComps.length > 0 ? "Medium" : "Low",
+    brandNote:  null,
+  };
+}
+
+// ─── CompetitorIntelligencePanel ─────────────────────────────────────────────
+
+function CompetitorIntelligencePanel({
+  allKws, buckets, userCompetitors,
+}: {
+  allKws:          EnrichedWorkspaceKeyword[];
+  buckets:         BucketDef[];
+  userCompetitors: string[];
+}) {
+  const lib = allKws.filter((k) => k.isLibrary);
+  if (lib.length === 0) return null;
+
+  const highPressureCount = lib.filter((k) => k.competitorPressure === "High").length;
+  const avgScore = Math.round(lib.reduce((s, k) => s + deriveCompetitivenessScore(k), 0) / lib.length);
+
+  let mostContestedLabel = "—";
+  let maxAvg = 0;
+  for (const bucket of buckets) {
+    const bKws = lib.filter((k) => (bucket.categories as string[]).includes(k.category));
+    if (bKws.length === 0) continue;
+    const avg = bKws.reduce((s, k) => s + deriveCompetitivenessScore(k), 0) / bKws.length;
+    if (avg > maxAvg) { maxAvg = avg; mostContestedLabel = bucket.label; }
+  }
+
+  const compSet = new Set<string>();
+  lib.forEach((k) => k.competitorExamples.forEach((c) => c && compSet.add(c)));
+  userCompetitors.forEach((c) => c && compSet.add(c));
+  const competitors = Array.from(compSet).slice(0, 8);
+
+  const scoreColor = avgScore >= 70 ? "text-red-600" : avgScore >= 40 ? "text-amber-600" : "text-emerald-600";
+  const highColor  = highPressureCount > 0 ? "text-red-600" : "text-slate-500";
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Shield size={13} className="text-slate-400 shrink-0" />
+        <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Competitor Intelligence</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">High Pressure</p>
+          <p className={`text-2xl font-bold tabular-nums ${highColor}`}>{highPressureCount}</p>
+          <p className="text-[10px] text-slate-400">of {lib.length} keywords</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Avg Competitiveness</p>
+          <p className={`text-2xl font-bold tabular-nums ${scoreColor}`}>{avgScore}</p>
+          <p className="text-[10px] text-slate-400">/ 100</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Most Contested</p>
+          <p className="text-sm font-bold text-slate-800 mt-1">{mostContestedLabel}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Competitors Detected</p>
+          {competitors.length > 0 ? (
+            <p className="text-xs text-slate-700 leading-relaxed mt-1">{competitors.join(" · ")}</p>
+          ) : (
+            <p className="text-xs text-slate-400 italic mt-1">Add competitors above to estimate</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── BucketSection component ──────────────────────────────────────────────────
+
+function BucketSection({
+  bucket, keywords, defaultCountry, userCompetitors,
+  onToggleExclude, onSelectAll, onDelete, onEditKeyword, onAddKeyword, onBulkAdd,
+}: {
+  bucket:          BucketDef;
+  keywords:        EnrichedWorkspaceKeyword[];
+  defaultCountry:  string;
+  userCompetitors: string[];
+  onToggleExclude: (id: number) => void;
+  onSelectAll:     (ids: number[], include: boolean) => void;
+  onDelete:        (id: number) => void;
+  onEditKeyword:   (id: number, text: string) => void;
+  onAddKeyword:    (text: string, country: string) => void;
+  onBulkAdd:       (texts: string[], country: string) => void;
+}) {
+  const [showAdd,     setShowAdd]     = useState(false);
+  const [addText,     setAddText]     = useState("");
+  const [addCountry,  setAddCountry]  = useState(defaultCountry || LIBRARY_COUNTRIES[0]);
+  const [showBulk,    setShowBulk]    = useState(false);
+  const [bulkText,    setBulkText]    = useState("");
+  const [bulkCountry, setBulkCountry] = useState(defaultCountry || LIBRARY_COUNTRIES[0]);
+  const [editId,      setEditId]      = useState<number | null>(null);
+  const [editText,    setEditText]    = useState("");
+
+  const bucketStrategy = BUCKET_STRATEGIES[bucket.id] ?? "Use targeted ad copy and a highly relevant landing page.";
+
+  const activeKws    = keywords.filter((k) => !k.exclude);
+  const headerCls    = BUCKET_HEADER_CLS[bucket.color];
+  const badgeCls     = BUCKET_BADGE_CLS[bucket.color];
+  const dotCls       = BUCKET_DOT_CLS[bucket.color];
+  const inCls        = "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400";
+
+  // Bucket totals (selected keywords only)
+  const totalBudget  = activeKws.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+  const totalClicks  = activeKws.reduce((s, k) => s + k.estimatedClicks, 0);
+  const totalLeads   = activeKws.reduce((s, k) => s + k.estimatedLeads, 0);
+  const totalSearch  = activeKws.reduce((s, k) => s + k.monthlySearches, 0);
+  const avgCpa       = totalLeads > 0 ? Math.round(totalBudget / totalLeads) : 0;
+
+  function handleAdd() {
+    if (!addText.trim()) return;
+    onAddKeyword(addText.trim(), addCountry);
+    setAddText(""); setShowAdd(false);
+  }
+
+  function handleBulkAdd() {
+    const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    onBulkAdd(lines, bulkCountry);
+    setBulkText(""); setShowBulk(false);
+  }
+
+  function startEdit(kw: EnrichedWorkspaceKeyword) {
+    setEditId(kw.id); setEditText(kw.keyword);
+  }
+
+  function saveEdit() {
+    if (editId != null && editText.trim()) onEditKeyword(editId, editText.trim());
+    setEditId(null);
+  }
+
+  const allSelected  = keywords.length > 0 && keywords.every((k) => !k.exclude);
+  const noneSelected = keywords.every((k) => k.exclude);
+  const kwIds        = keywords.map((k) => k.id);
+
+  const thCls = "px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap";
+  const thRCls = `${thCls} text-right`;
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+
+      {/* ── Bucket header ───────────────────────────────────────────────────── */}
+      <div className={`px-4 py-3 border-b ${headerCls}`}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${dotCls}`} />
+            <span className="font-bold text-sm text-slate-800 shrink-0">{bucket.label}</span>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${badgeCls}`}>
+              {activeKws.length} / {keywords.length}
+            </span>
+            <span className="text-xs text-slate-500 hidden md:inline truncate">{bucket.description}</span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            {keywords.length > 0 && (
+              <button
+                onClick={() => onSelectAll(kwIds, noneSelected)}
+                className="text-xs font-semibold text-slate-400 hover:text-brand-600 transition-colors whitespace-nowrap"
+              >
+                {allSelected ? "Deselect all" : "Select all"}
+              </button>
+            )}
+            <button onClick={() => { setShowAdd(!showAdd); setShowBulk(false); }}
+              className="text-xs font-semibold text-slate-500 hover:text-brand-600 transition-colors">
+              + Add
+            </button>
+            <button onClick={() => { setShowBulk(!showBulk); setShowAdd(false); }}
+              className="text-xs font-semibold text-slate-500 hover:text-brand-600 transition-colors">
+              Bulk paste
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Keyword table ────────────────────────────────────────────────────── */}
+      {keywords.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[680px]">
+            <thead className="bg-slate-50 border-b border-slate-100">
+              <tr>
+                <th className="px-3 py-2 w-8" />
+                <th className={thCls}>Keyword</th>
+                <th className={thCls + " hidden sm:table-cell"}>Country</th>
+                <th className={thCls + " hidden md:table-cell"}>Match</th>
+                <th className={thRCls + " hidden md:table-cell"}>Searches</th>
+                <th className={thRCls}>CPC</th>
+                <th className={thRCls}>Budget</th>
+                <th className={thRCls + " hidden lg:table-cell"}>Clicks</th>
+                <th className={thRCls + " hidden lg:table-cell"}>Leads</th>
+                <th className={thRCls + " hidden lg:table-cell"}>CPA</th>
+                <th className={thCls + " text-center"}>Action</th>
+                <th className="px-3 py-2 w-14" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {keywords.map((kw) => (
+                <Fragment key={kw.id}>
+                <tr className={`group hover:bg-slate-50/70 transition-colors ${kw.exclude ? "opacity-40" : ""}`}>
+
+                  {/* Checkbox */}
+                  <td className="px-3 py-2.5 w-8">
+                    <input
+                      type="checkbox"
+                      checked={!kw.exclude}
+                      onChange={() => onToggleExclude(kw.id)}
+                      className="w-3.5 h-3.5 rounded accent-brand-500 cursor-pointer"
+                    />
+                  </td>
+
+                  {/* Keyword (editable) */}
+                  <td className="px-3 py-2.5 max-w-[220px]">
+                    {editId === kw.id ? (
+                      <input
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditId(null); }}
+                        onBlur={saveEdit}
+                        autoFocus
+                        className="w-full rounded border border-brand-300 px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                      />
+                    ) : (
+                      <span className={`font-medium text-xs leading-tight ${kw.exclude ? "line-through text-slate-400" : "text-slate-800"}`}>
+                        {kw.keyword}
+                      </span>
+                    )}
+                  </td>
+
+                  {/* Country */}
+                  <td className="px-3 py-2.5 hidden sm:table-cell whitespace-nowrap text-slate-500">
+                    {kw.country}
+                  </td>
+
+                  {/* Match type */}
+                  <td className="px-3 py-2.5 hidden md:table-cell whitespace-nowrap">
+                    <EffMatchBadge matchType={kw.effectiveMatchType} inherited={kw.matchTypeInherited} />
+                  </td>
+
+                  {/* Monthly searches */}
+                  <td className="px-3 py-2.5 hidden md:table-cell text-right tabular-nums text-slate-500">
+                    {kw.monthlySearches > 0 ? kw.monthlySearches.toLocaleString() : "—"}
+                  </td>
+
+                  {/* CPC */}
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                    ${kw.suggestedCpc.toFixed(2)}
+                  </td>
+
+                  {/* Budget */}
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold whitespace-nowrap">
+                    {kw.suggestedMonthlyBudget > 0
+                      ? <span className="text-slate-800">${kw.suggestedMonthlyBudget.toLocaleString()}</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+
+                  {/* Clicks */}
+                  <td className="px-3 py-2.5 hidden lg:table-cell text-right tabular-nums text-slate-600">
+                    {kw.estimatedClicks > 0 ? kw.estimatedClicks.toLocaleString() : <span className="text-slate-300">—</span>}
+                  </td>
+
+                  {/* Leads */}
+                  <td className="px-3 py-2.5 hidden lg:table-cell text-right tabular-nums">
+                    {kw.estimatedLeads > 0
+                      ? <span className="font-bold text-emerald-600">{kw.estimatedLeads}</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+
+                  {/* CPA */}
+                  <td className="px-3 py-2.5 hidden lg:table-cell text-right tabular-nums text-slate-600 whitespace-nowrap">
+                    {kw.estimatedCpl > 0 ? `$${kw.estimatedCpl.toLocaleString()}` : <span className="text-slate-300">—</span>}
+                  </td>
+
+                  {/* Action badge */}
+                  <td className="px-3 py-2.5 text-center">
+                    <ActionBadge action={kw.effectiveAction} />
+                  </td>
+
+                  {/* Edit / delete */}
+                  <td className="px-3 py-2.5 w-14">
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => startEdit(kw)} title="Edit"
+                        className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+                        <Pencil size={11} />
+                      </button>
+                      {kw.isLibrary && (
+                        <button onClick={() => onDelete(kw.id)} title="Delete"
+                          className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50 transition-colors">
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+
+                {/* ── Competitor intel strip — always visible ────────── */}
+                {(() => {
+                  const score       = deriveCompetitivenessScore(kw);
+                  const compData    = buildCompetitorData(kw, userCompetitors, bucket.id);
+                  const scoreBar    = score >= 70 ? "bg-red-500"     : score >= 40 ? "bg-amber-400"   : "bg-emerald-500";
+                  const scoreText   = score >= 70 ? "text-red-600"   : score >= 40 ? "text-amber-600" : "text-emerald-600";
+                  const pressureCls = PRESSURE_BADGE_CLS[kw.competitorPressure] ?? "bg-slate-100 text-slate-600";
+
+                  return (
+                    <tr className={`border-b border-slate-100 bg-slate-50/40 ${kw.exclude ? "opacity-40" : ""}`}>
+                      <td className="w-8" />
+                      <td colSpan={11} className="px-3 pb-3 pt-1">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-x-6 gap-y-2 text-[11px]">
+
+                          {/* Competitiveness Score */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 font-medium shrink-0 w-12">Score</span>
+                            <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full ${scoreBar}`} style={{ width: `${score}%` }} />
+                            </div>
+                            <span className={`font-bold tabular-nums shrink-0 ${scoreText}`}>{score}/100</span>
+                          </div>
+
+                          {/* Competitor Pressure */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 font-medium shrink-0 w-12">Pressure</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${pressureCls}`}>
+                              {kw.competitorPressure}
+                            </span>
+                          </div>
+
+                          {/* Likely Competitors Bidding — pills + confidence */}
+                          <div className="flex flex-col gap-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-slate-400 font-medium shrink-0">Likely Bidding</span>
+                              <span
+                                className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${CONFIDENCE_CLS[compData.confidence]}`}
+                                title={
+                                  compData.confidence === "High"
+                                    ? "High confidence — sourced from keyword data"
+                                    : compData.confidence === "Medium"
+                                    ? "Medium confidence — based on your competitor inputs"
+                                    : "Low confidence — no competitor data available"
+                                }
+                              >
+                                {compData.confidence}
+                              </span>
+                            </div>
+                            <div
+                              className="flex flex-wrap gap-1"
+                              title="Likely competitors bidding on this keyword — estimate only, not actual ad data"
+                            >
+                              {compData.names.map((name) => (
+                                <span
+                                  key={name}
+                                  className="inline-flex items-center px-2 py-0.5 rounded-full bg-white text-slate-700 text-[10px] font-medium border border-slate-200 shadow-sm"
+                                >
+                                  {name}
+                                </span>
+                              ))}
+                              {compData.overflow > 0 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-50 text-slate-400 text-[10px] border border-slate-200">
+                                  +{compData.overflow} more
+                                </span>
+                              )}
+                              {compData.brandNote && compData.names.length > 0 && (
+                                <span className="text-[10px] text-slate-400 italic self-center">· {compData.brandNote}</span>
+                              )}
+                              {compData.names.length === 0 && compData.brandNote && (
+                                <span className="text-[10px] text-slate-400 italic">{compData.brandNote}</span>
+                              )}
+                              {compData.names.length === 0 && !compData.brandNote && (
+                                <span className="text-[10px] text-slate-400 italic">Add competitors to estimate</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Strategy to Win */}
+                          <div className="flex items-baseline gap-2 min-w-0">
+                            <span className="text-[10px] text-slate-400 font-medium shrink-0 w-12">Win</span>
+                            <span className="text-slate-500 italic truncate" title={bucketStrategy}>
+                              {bucketStrategy.length > 55 ? bucketStrategy.slice(0, 55) + "…" : bucketStrategy}
+                            </span>
+                          </div>
+
+                          {/* Forecast Debug */}
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">Forecast Debug</span>
+                            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] tabular-nums">
+                              <span className="text-slate-500">
+                                <span className="text-slate-400">Imp </span>
+                                <span className="font-medium">{kw.estimatedImpressions?.toLocaleString() ?? "—"}</span>
+                              </span>
+                              <span className="text-slate-500">
+                                <span className="text-slate-400">CTR </span>
+                                <span className="font-medium">{kw.estimatedCtr != null ? `${(kw.estimatedCtr * 100).toFixed(1)}%` : "—"}</span>
+                              </span>
+                              <span className="text-slate-500">
+                                <span className="text-slate-400">Clicks </span>
+                                <span className="font-medium">{kw.estimatedClicks > 0 ? kw.estimatedClicks.toLocaleString() : "0"}</span>
+                              </span>
+                              <span className="text-slate-500">
+                                <span className="text-slate-400">CVR </span>
+                                <span className="font-medium text-indigo-600">{kw.estimatedCvr != null ? `${(kw.estimatedCvr * 100).toFixed(1)}%` : "—"}</span>
+                              </span>
+                              <span className={kw.estimatedLeads > 0 ? "text-emerald-600 font-semibold" : "text-slate-400"}>
+                                <span className="font-normal">{kw.estimatedLeads > 0 ? "" : ""}</span>
+                                {kw.estimatedLeads > 0 ? `${kw.estimatedLeads} leads` : "0 leads"}
+                              </span>
+                            </div>
+                          </div>
+
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })()}
+              </Fragment>
+            ))}
+
+            </tbody>
+
+            {/* ── Bucket totals footer ─────────────────────────────────────── */}
+            {activeKws.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-50/80">
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                    {activeKws.length} selected
+                  </td>
+                  <td className="hidden sm:table-cell" />
+                  <td className="hidden md:table-cell" />
+                  <td className="hidden md:table-cell px-3 py-2 text-right text-[10px] font-bold text-slate-500 tabular-nums">
+                    {totalSearch > 0 ? totalSearch.toLocaleString() : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right text-[10px] text-slate-400">—</td>
+                  <td className="px-3 py-2 text-right text-[10px] font-bold text-slate-800 tabular-nums whitespace-nowrap">
+                    {totalBudget > 0 ? `$${totalBudget.toLocaleString()}` : "—"}
+                  </td>
+                  <td className="hidden lg:table-cell px-3 py-2 text-right text-[10px] font-bold text-slate-700 tabular-nums">
+                    {totalClicks > 0 ? totalClicks.toLocaleString() : "—"}
+                  </td>
+                  <td className="hidden lg:table-cell px-3 py-2 text-right text-[10px] font-bold text-emerald-600 tabular-nums">
+                    {totalLeads > 0 ? totalLeads : "—"}
+                  </td>
+                  <td className="hidden lg:table-cell px-3 py-2 text-right text-[10px] font-bold text-slate-700 tabular-nums whitespace-nowrap">
+                    {avgCpa > 0 ? `$${avgCpa.toLocaleString()}` : "—"}
+                  </td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2" />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      ) : (
+        <div className="px-5 py-8 text-center text-sm text-slate-400">
+          No keywords in this bucket yet.{" "}
+          <button onClick={() => setShowAdd(true)} className="text-brand-500 font-semibold hover:underline">Add one</button>
+          {" "}or use{" "}
+          <button onClick={() => setShowBulk(true)} className="text-brand-500 font-semibold hover:underline">Bulk Paste</button>.
+        </div>
+      )}
+
+      {/* ── Inline add form ──────────────────────────────────────────────────── */}
+      {showAdd && (
+        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/60 flex flex-wrap items-center gap-2">
+          <input
+            type="text" value={addText} onChange={(e) => setAddText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") setShowAdd(false); }}
+            placeholder="Type a keyword…" autoFocus className={`${inCls} flex-1 min-w-0`}
+          />
+          <select value={addCountry} onChange={(e) => setAddCountry(e.target.value)} className={`${inCls} shrink-0`}>
+            {LIBRARY_COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button onClick={handleAdd} disabled={!addText.trim()}
+            className="px-3 py-2 rounded-lg text-xs font-semibold bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-40 transition-colors shrink-0">
+            Add
+          </button>
+          <button onClick={() => { setShowAdd(false); setAddText(""); }}
+            className="px-3 py-2 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 transition-colors shrink-0">
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* ── Bulk paste ───────────────────────────────────────────────────────── */}
+      {showBulk && (
+        <div className="px-4 py-4 border-t border-slate-100 bg-slate-50/60 space-y-3">
+          <div className="flex gap-3">
+            <textarea
+              value={bulkText} onChange={(e) => setBulkText(e.target.value)}
+              rows={4} placeholder={"keyword one\nkeyword two\nkeyword three"}
+              className={`${inCls} flex-1 resize-none font-mono text-xs`}
+            />
+            <div className="flex flex-col gap-2 shrink-0">
+              <select value={bulkCountry} onChange={(e) => setBulkCountry(e.target.value)} className={inCls}>
+                {LIBRARY_COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <button onClick={handleBulkAdd} disabled={!bulkText.trim()}
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-40 transition-colors">
+                Add {bulkText.split("\n").filter((l) => l.trim()).length} Keywords
+              </button>
+              <button onClick={() => { setShowBulk(false); setBulkText(""); }}
+                className="px-3 py-2 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 text-center transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function KeywordsPage() {
@@ -2495,6 +3294,14 @@ export default function KeywordsPage() {
     ));
   }, [activeProject]);
 
+  // Pre-fill simplified inputs from project (only on first load / project change, never overwrite user edits)
+  useEffect(() => {
+    if (activeProject) {
+      setServiceInput((prev) => prev || activeProject.serviceType || "");
+      setBrandInput((prev)   => prev || activeProject.projectName || "");
+    }
+  }, [activeProject?.id]);
+
   // ── Filter state ───────────────────────────────────────────────────────────
   const [search,          setSearch]          = useState("");
   const [filterCountry,   setFilterCountry]   = useState("");
@@ -2502,7 +3309,15 @@ export default function KeywordsPage() {
   const [filterMatchType, setFilterMatchType] = useState("");
   const [filterAction,    setFilterAction]    = useState("");
   const [filterSource,    setFilterSource]    = useState("");
-  const [filterCategory,  setFilterCategory]  = useState("");
+  const [filterCategory,   setFilterCategory]   = useState("");
+  const [showAllCountries,  setShowAllCountries]  = useState(false);
+  const [starterGenerated,  setStarterGenerated]  = useState(false);
+
+  // ── Simplified input state ─────────────────────────────────────────────────
+  const [serviceInput,  setServiceInput]  = useState("");
+  const [brandInput,    setBrandInput]    = useState("");
+  const [competitorInput, setCompetitorInput] = useState("");
+  const [showAdvanced,  setShowAdvanced]  = useState(false);
 
   // ── Effective assumptions (with scenario applied) ──────────────────────────
   const effectiveAssumptions = useMemo(
@@ -2518,6 +3333,12 @@ export default function KeywordsPage() {
     targetAudience: activeProject?.targetAudience ?? "",
     geoFocus:       activeProject?.geoFocus       ?? "",
   }), [activeProject]);
+
+  // ── Profile for dynamic campaign keyword generation ─────────────────────────
+  const campaignProfile = useMemo<ProjectProfile>(() => ({
+    brand: brandInput.trim() || activeProject?.projectName || "",
+    offer: serviceInput.trim() || activeProject?.serviceType || "",
+  }), [brandInput, serviceInput, activeProject]);
 
   // System keywords in scope = KEYWORD_COUNTRIES ∩ targetCountries
   const inScopeCountries = useMemo(
@@ -2541,29 +3362,45 @@ export default function KeywordsPage() {
     [scenarioKws, sysOverrides, libraryKws, scenario, campaigns, adGroups]
   );
 
+  // 2b. Country-filtered workspace keywords (drives all display, KPIs, rollups)
+  const activeCountries = effectiveAssumptions.targetCountries;
+  const countryFilteredKws = useMemo(() => {
+    if (showAllCountries || activeCountries.length === 0) return workspaceKws;
+    const activeSet = new Set(activeCountries);
+    return workspaceKws.filter((kw) =>
+      kw.source === "system"
+        ? inScopeCountries.includes(kw.country)
+        : activeSet.has(kw.country)
+    );
+  }, [workspaceKws, activeCountries, inScopeCountries, showAllCountries]);
+
+  const hiddenKwCount = useMemo(() => {
+    if (showAllCountries || activeCountries.length === 0) return 0;
+    const activeSet = new Set(activeCountries);
+    return libraryKws.filter((k) => !activeSet.has(k.country)).length;
+  }, [libraryKws, activeCountries, showAllCountries]);
+
   // 3. Forecast-ready: non-excluded, in-scope, effectiveAction applied
   const forecastReadyKws = useMemo(() => {
-    const targetSet           = new Set<string>(effectiveAssumptions.targetCountries);
     const excludedCampaignIds = new Set(campaigns.filter((c) => c.excludeFromForecast).map((c) => c.id));
     const excludedAdGroupIds  = new Set(adGroups.filter((g) => g.excludeFromForecast).map((g) => g.id));
-    return workspaceKws
+    return countryFilteredKws
       .filter((kw) => {
         if (kw.effectiveAction === "No") return false;
         if (kw.campaignId && excludedCampaignIds.has(kw.campaignId)) return false;
         if (kw.adGroupId  && excludedAdGroupIds.has(kw.adGroupId))   return false;
         if (isKeywordSuppressed(kw.keyword, kw.campaignId, kw.adGroupId, negativeKws)) return false;
-        if (kw.source === "system") return inScopeCountries.includes(kw.country);
-        return targetSet.has(kw.country);
+        return true;
       })
       .map((kw) => ({ ...kw, action: kw.effectiveAction })) as unknown as Keyword[];
-  }, [workspaceKws, inScopeCountries, effectiveAssumptions.targetCountries, campaigns, adGroups, negativeKws]);
+  }, [countryFilteredKws, campaigns, adGroups, negativeKws]);
 
-  // 4a. kwId → campaignId lookup (built from workspaceKws before the Keyword cast)
+  // 4a. kwId → campaignId lookup (built from countryFilteredKws before the Keyword cast)
   const kwCampaignMap = useMemo(() => {
     const map = new Map<number, string | undefined>();
-    for (const kw of workspaceKws) map.set(kw.id, kw.campaignId);
+    for (const kw of countryFilteredKws) map.set(kw.id, kw.campaignId);
     return map;
-  }, [workspaceKws]);
+  }, [countryFilteredKws]);
 
   // 4b. Budget allocation (group-aware when manual campaign budgets exist)
   const budgetMap = useMemo(
@@ -2582,10 +3419,10 @@ export default function KeywordsPage() {
     [forecastReadyKws, budgetMap, effectiveAssumptions, fa]
   );
 
-  // 6. Merge forecast + relevance back onto all workspace keywords
+  // 6. Merge forecast + relevance back onto country-filtered workspace keywords
   const enrichedAll = useMemo<EnrichedWorkspaceKeyword[]>(() => {
     const forecastMap = new Map<number, EnrichedKeyword>(enrichedForecast.map((k) => [k.id, k]));
-    return workspaceKws.map((kw) => {
+    return countryFilteredKws.map((kw) => {
       const e         = forecastMap.get(kw.id);
       const relevance = computeBusinessRelevance(kw.category, kw.intent, kw.competition, projectContext);
       return {
@@ -2596,9 +3433,13 @@ export default function KeywordsPage() {
         estimatedLeads:         e?.estimatedLeads         ?? 0,
         estimatedCpl:           e?.estimatedCpl           ?? 0,
         revenuePotential:       e?.revenuePotential       ?? 0,
+        roas:                   e?.roas                   ?? 0,
+        estimatedImpressions:   e?.estimatedImpressions,
+        estimatedCtr:           e?.estimatedCtr,
+        estimatedCvr:           e?.estimatedCvr,
       };
     });
-  }, [workspaceKws, enrichedForecast, projectContext]);
+  }, [countryFilteredKws, enrichedForecast, projectContext]);
 
   // 7. UI filters
   const filtered = useMemo(() => {
@@ -2880,8 +3721,9 @@ export default function KeywordsPage() {
     type: CampaignType,
     starterKws: LibraryKeyword[],
     agDefs: Array<{ name: string; groupType: AdGroupType }>,
+    extras: { keywordBase?: string; targetActions?: string; competitors?: string } = {},
   ) {
-    const campaign = createCampaign(name, type);
+    const campaign = createCampaign(name, type, extras);
     // Create ad groups
     agDefs.forEach((def) => createAdGroup(campaign.id, def.name, def.groupType));
     setCampaigns(getCampaigns());
@@ -2908,7 +3750,10 @@ export default function KeywordsPage() {
   }
 
   function handleAddPack(packName: string) {
-    const kws = buildPresetPackKeywords(packName);
+    const countries = effectiveAssumptions.targetCountries.length > 0
+      ? effectiveAssumptions.targetCountries
+      : undefined;
+    const kws = buildPresetPackKeywords(packName, countries, campaignProfile);
     setLibraryKws((prev) => {
       const updated = [...prev, ...kws];
       saveLibraryKeywords(updated);
@@ -2928,6 +3773,154 @@ export default function KeywordsPage() {
   function handleAddGenerated(kws: LibraryKeyword[]) {
     setLibraryKws((prev) => {
       const updated = [...prev, ...kws];
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+  }
+
+  function handleGenerateStarters() {
+    if (!activeProject) return;
+    const kws = generateStarterKeywordsForProject(
+      {
+        projectName: activeProject.projectName,
+        serviceType: activeProject.serviceType,
+        offerType:   activeProject.offerType,
+        industry:    activeProject.industry,
+      },
+      effectiveAssumptions.targetCountries,
+    );
+    if (kws.length === 0) return;
+    setLibraryKws((prev) => {
+      const updated = [...prev, ...kws];
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+    setStarterGenerated(true);
+  }
+
+  // ── Simplified keyword bucket actions ─────────────────────────────────────
+
+  // Terms that are business-objective classifications, never keyword bases.
+  // Only blocked when the user did NOT explicitly type them in the services field.
+  const BAD_KEYWORD_TERMS = [
+    "lead generation", "professional service", "professional services",
+    "saas", "software as a service", "b2b", "b2c", "b2b2c",
+    "ecommerce", "e-commerce", "marketplace",
+  ];
+
+  function handleRecommendKeywords() {
+    const services = serviceInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+    const comps    = competitorInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+    const brand    = brandInput.trim() || activeProject?.projectName || "";
+    if (services.length === 0 && !brand) return;
+
+    const countries = effectiveAssumptions.targetCountries.length > 0
+      ? effectiveAssumptions.targetCountries
+      : ["Singapore"];
+
+    // Build set of terms the user explicitly typed — these are never blocked
+    const userTerms = new Set(services.map((s) => s.toLowerCase().trim()));
+
+    const profile: ProjectProfile = { brand, offer: services[0] || brand };
+    const userInputs: UserKeywordInputs = {
+      services:    services.length > 0 ? services : undefined,
+      competitors: comps.length    > 0 ? comps    : undefined,
+    };
+
+    const allKws: LibraryKeyword[] = [];
+    for (const bucket of BUCKETS) {
+      for (const type of bucket.campaignTypes) {
+        const batch = buildDynamicCampaignKeywords(type, "", profile, countries, userInputs);
+        allKws.push(...batch.map((k) => ({ ...k, campaignGroup: bucket.id })));
+      }
+    }
+
+    // Safety filter: drop any keyword containing a bad classification term
+    // that the user didn't explicitly enter as a service.
+    const filtered = allKws
+      .filter((k) => {
+        const kwL = k.keyword.toLowerCase();
+        for (const bad of BAD_KEYWORD_TERMS) {
+          if (kwL.includes(bad) && !userTerms.has(bad)) return false;
+        }
+        return true;
+      })
+      .map((k) => ({ ...k, campaignId: undefined, adGroupId: undefined }));
+
+    // Replace all non-custom keywords so stale/wrong recommendations are cleared.
+    setLibraryKws((prev) => {
+      const customOnly = prev.filter((k) => k.source === "custom");
+      const updated    = [...customOnly, ...filtered];
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+  }
+
+  function toggleBucketExclude(kwId: number) {
+    setLibraryKws((prev) => {
+      const updated = prev.map((k) => k.id === kwId ? { ...k, exclude: !k.exclude } : k);
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+  }
+
+  function handleBucketEditKeyword(kwId: number, newText: string) {
+    setLibraryKws((prev) => {
+      const updated = prev.map((k) => k.id === kwId ? { ...k, keyword: newText } : k);
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+  }
+
+  function makeBucketKw(text: string, country: string, category: KeywordCategory): LibraryKeyword {
+    const derived = deriveKeywordFields({ intent: "Commercial", competition: "Medium", competitorPressureScore: 50, estimatedCpc: 3 });
+    return {
+      id:                      nextKwId(),
+      keyword:                 text,
+      country,
+      category,
+      source:                  "custom",
+      packName:                "",
+      note:                    "",
+      intent:                  "Commercial",
+      matchType:               "Phrase",
+      monthlySearches:         100,
+      competition:             "Medium",
+      estimatedCpc:            3,
+      competitorPressureScore: 50,
+      competitorExamples:      [],
+      strategyNote:            "",
+      recommendationNote:      "",
+      exclude:                 false,
+      forceBuy:                false,
+      forceTest:               false,
+      createdAt:               new Date().toISOString(),
+      ...derived,
+    };
+  }
+
+  function handleBucketAddKeyword(text: string, country: string, category: KeywordCategory) {
+    const kw = makeBucketKw(text, country, category);
+    setLibraryKws((prev) => { const u = [...prev, kw]; saveLibraryKeywords(u); return u; });
+  }
+
+  function handleBucketBulkAdd(texts: string[], country: string, category: KeywordCategory) {
+    const kws = texts.map((t) => makeBucketKw(t, country, category));
+    setLibraryKws((prev) => { const u = [...prev, ...kws]; saveLibraryKeywords(u); return u; });
+  }
+
+  function handleBucketSelectAll(ids: number[], include: boolean) {
+    setLibraryKws((prev) => {
+      const idSet = new Set(ids);
+      const updated = prev.map((k) => idSet.has(k.id) ? { ...k, exclude: !include } : k);
+      saveLibraryKeywords(updated);
+      return updated;
+    });
+  }
+
+  function handleClearRecommendations() {
+    setLibraryKws((prev) => {
+      const updated = prev.filter((k) => k.source === "custom");
       saveLibraryKeywords(updated);
       return updated;
     });
@@ -2954,14 +3947,295 @@ export default function KeywordsPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  const defaultCountry  = effectiveAssumptions.targetCountries[0] || LIBRARY_COUNTRIES[0];
+  const libraryKwsExist = enrichedAll.some((k) => k.isLibrary);
+  const canRecommend    = serviceInput.trim().length > 0 || brandInput.trim().length > 0;
+
+  // Derive current step for the progress header
+  const currentStep = !libraryKwsExist ? 1 : totalBuyCount === 0 ? 2 : 3;
+
+  const STEPS = [
+    { n: 1, label: "Enter keyword inputs" },
+    { n: 2, label: "Review recommendations" },
+    { n: 3, label: "Generate forecast" },
+  ];
+
   return (
-    <div className="max-w-[1600px] mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+
+      {/* ── Page header ────────────────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Keyword Planner</h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            {isProjectSet ? activeProject!.projectName : "No project — using defaults"}
+            {effectiveAssumptions.targetCountries.length > 0 && (
+              <span className="ml-1.5 text-slate-300">·</span>
+            )}
+            {effectiveAssumptions.targetCountries.length > 0 && (
+              <span className="ml-1.5">{effectiveAssumptions.targetCountries.join(", ")}</span>
+            )}
+          </p>
+        </div>
+        <div className="flex gap-2 self-start shrink-0">
+          <button
+            onClick={() => exportKeywordsCsv(enrichedAll, campaigns, adGroups, negativeKws, assumptions.projectName)}
+            title="Export all keywords to CSV"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
+          >
+            <Download size={13} /> Export CSV
+          </button>
+          <Link
+            href={activeProject ? `/projects/${activeProject.id}/edit` : "/projects/new"}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:border-brand-500 hover:text-brand-500 transition-colors"
+          >
+            <Settings2 size={13} />
+            {isProjectSet ? "Edit Project" : "Set Up Project"}
+          </Link>
+        </div>
+      </div>
+
+      {/* ── 3-step progress ────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-0">
+        {STEPS.map((step, i) => {
+          const done    = step.n < currentStep;
+          const active  = step.n === currentStep;
+          return (
+            <div key={step.n} className="flex items-center flex-1 min-w-0">
+              <div className="flex items-center gap-2 shrink-0">
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors ${
+                  done   ? "bg-brand-500 border-brand-500 text-white" :
+                  active ? "bg-white border-brand-500 text-brand-600" :
+                           "bg-white border-slate-200 text-slate-400"
+                }`}>
+                  {done ? "✓" : step.n}
+                </div>
+                <span className={`text-xs font-semibold whitespace-nowrap hidden sm:inline ${
+                  active ? "text-brand-600" : done ? "text-slate-500" : "text-slate-400"
+                }`}>
+                  {step.label}
+                </span>
+              </div>
+              {i < STEPS.length - 1 && (
+                <div className={`flex-1 h-0.5 mx-3 rounded-full transition-colors ${done ? "bg-brand-400" : "bg-slate-200"}`} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* No-project nudge */}
+      {!isProjectSet && (
+        <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
+          <Info size={15} className="text-amber-400 mt-0.5 shrink-0" />
+          <p className="text-xs text-amber-700 leading-relaxed">
+            <span className="font-semibold">No project yet.</span>{" "}
+            Forecasts use default assumptions ($5,000/mo, 3.5% CVR, $10,000 deal).{" "}
+            <Link href="/projects/new" className="underline font-semibold hover:text-amber-900">Create a project →</Link>
+          </p>
+        </div>
+      )}
+
+      {/* ── Step 1: Input card ─────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-brand-600 uppercase tracking-wider">Step 1</span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900 mt-0.5">What are you advertising?</h2>
+            <p className="text-sm text-slate-400 mt-0.5">Enter your services and brand — we&apos;ll build keyword recommendations grouped by intent.</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+              Services / Keyword Base <span className="text-brand-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={serviceInput}
+              onChange={(e) => setServiceInput(e.target.value)}
+              placeholder="Employer of Record, EOR, Headhunting"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+            />
+            <p className="text-xs text-slate-400 mt-1">Comma-separated — each service generates its own keyword variations</p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">Brand Name</label>
+            <input
+              type="text"
+              value={brandInput}
+              onChange={(e) => setBrandInput(e.target.value)}
+              placeholder="Elitez"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">Competitors <span className="font-normal text-slate-400">(optional)</span></label>
+            <input
+              type="text"
+              value={competitorInput}
+              onChange={(e) => setCompetitorInput(e.target.value)}
+              placeholder="Randstad, Michael Page, Adecco"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5">Target Markets</label>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 min-h-[42px] flex items-center">
+              {effectiveAssumptions.targetCountries.length > 0
+                ? effectiveAssumptions.targetCountries.join(", ")
+                : <span className="text-slate-400">Not set</span>}
+            </div>
+            <Link
+              href={activeProject ? `/projects/${activeProject.id}/edit` : "/projects/new"}
+              className="text-xs text-brand-500 font-semibold hover:underline mt-1 inline-block"
+            >
+              Edit in project settings →
+            </Link>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={handleRecommendKeywords}
+            disabled={!canRecommend}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Wand2 size={15} />
+            {libraryKwsExist ? "Regenerate Keywords" : "Recommend Keywords"}
+          </button>
+          {libraryKwsExist && (
+            <button
+              onClick={handleClearRecommendations}
+              className="text-xs font-semibold text-slate-400 hover:text-rose-500 transition-colors"
+            >
+              Clear recommendations
+            </button>
+          )}
+          {libraryKwsExist && (
+            <span className="text-xs text-slate-400">
+              {libraryKws.filter((k) => !k.exclude).length} of {libraryKws.length} keyword{libraryKws.length !== 1 ? "s" : ""} selected
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Step 2: Keyword buckets ─────────────────────────────────────────── */}
+      {libraryKwsExist ? (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-xs font-bold text-brand-600 uppercase tracking-wider">Step 2</span>
+              <h2 className="text-base font-bold text-slate-900 mt-0.5">Review Your Keywords</h2>
+            </div>
+            <span className="text-xs text-slate-400 hidden sm:inline">Check to include · uncheck to exclude from forecast</span>
+          </div>
+
+          {/* Competitor Intelligence summary */}
+          <CompetitorIntelligencePanel
+            allKws={enrichedAll}
+            buckets={BUCKETS}
+            userCompetitors={competitorInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)}
+          />
+
+          {BUCKETS.map((bucket) => {
+            const bucketKws = enrichedAll.filter(
+              (k) => k.isLibrary && (bucket.categories as string[]).includes(k.category)
+            );
+            return (
+              <BucketSection
+                key={bucket.id}
+                bucket={bucket}
+                keywords={bucketKws}
+                defaultCountry={defaultCountry}
+                userCompetitors={competitorInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)}
+                onToggleExclude={toggleBucketExclude}
+                onSelectAll={handleBucketSelectAll}
+                onDelete={deleteLibraryKw}
+                onEditKeyword={handleBucketEditKeyword}
+                onAddKeyword={(text, country) => handleBucketAddKeyword(text, country, bucket.categories[0])}
+                onBulkAdd={(texts, country) => handleBucketBulkAdd(texts, country, bucket.categories[0])}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center space-y-3">
+          <Wand2 size={36} className="text-slate-300 mx-auto" />
+          <div>
+            <p className="text-sm font-semibold text-slate-700">No keywords yet</p>
+            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+              Fill in your services above and click &ldquo;Recommend Keywords&rdquo; to get started.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 3: Summary + Generate Forecast ────────────────────────────── */}
+      {libraryKwsExist && (
+        <div className={`rounded-2xl border p-6 transition-colors ${totalBuyCount > 0 ? "bg-brand-500 border-brand-500" : "bg-white border-slate-200"}`}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <span className={`text-xs font-bold uppercase tracking-wider ${totalBuyCount > 0 ? "text-blue-200" : "text-brand-600"}`}>Step 3</span>
+              {totalBuyCount > 0 ? (
+                <>
+                  <p className="text-lg font-bold text-white mt-0.5">
+                    {totalBuyCount} keyword{totalBuyCount !== 1 ? "s" : ""} ready for forecast
+                  </p>
+                  <p className="text-sm text-blue-100 mt-0.5">
+                    Est. ${totalBudget.toLocaleString()}/mo
+                    {totalLeads > 0 && <> · {totalLeads} est. conversions</>}
+                    {totalRevenue > 0 && <> · ${totalRevenue.toLocaleString()} revenue</>}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-base font-bold text-slate-900 mt-0.5">Generate Forecast</p>
+                  <p className="text-sm text-slate-400 mt-0.5">Select at least one keyword above to enable the forecast.</p>
+                </>
+              )}
+            </div>
+            <Link
+              href="/forecast"
+              className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold transition-colors shrink-0 ${
+                totalBuyCount > 0
+                  ? "bg-white text-brand-600 hover:bg-blue-50"
+                  : "bg-slate-100 text-slate-400 pointer-events-none"
+              }`}
+            >
+              Generate Forecast →
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* ── Advanced Campaign Structure ─────────────────────────────────────── */}
+      <div>
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-700 transition-colors"
+        >
+          {showAdvanced ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+          Advanced Campaign Structure
+          {(campaigns.length > 0 || negativeKws.length > 0) && (
+            <span className="text-xs font-normal text-slate-400 ml-1">
+              ({campaigns.length} campaign{campaigns.length !== 1 ? "s" : ""}
+              {negativeKws.length > 0 ? ` · ${negativeKws.length} negative${negativeKws.length !== 1 ? "s" : ""}` : ""})
+            </span>
+          )}
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-6 space-y-6">
 
       {/* Create Campaign Modal */}
       {showCreateModal && (
         <CreateCampaignModal
           onConfirm={handleCreateCampaign}
           onClose={() => setShowCreateModal(false)}
+          targetCountries={effectiveAssumptions.targetCountries}
+          profile={campaignProfile}
         />
       )}
 
@@ -3103,6 +4377,8 @@ export default function KeywordsPage() {
             targetCountries={effectiveAssumptions.targetCountries}
             onAdd={handleAddGenerated}
             onClose={() => setActivePanel(null)}
+            defaultBrand={campaignProfile.brand}
+            defaultOffer={campaignProfile.offer}
           />
         </div>
       )}
@@ -3272,6 +4548,35 @@ export default function KeywordsPage() {
         ))}
       </div>
 
+      {/* Country filter warning */}
+      {hiddenKwCount > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">
+          <Globe size={15} className="shrink-0 text-amber-500" />
+          <span className="flex-1">
+            <span className="font-semibold">{hiddenKwCount} keyword{hiddenKwCount !== 1 ? "s" : ""} hidden</span>
+            {" "}— outside this project&apos;s selected markets ({activeCountries.join(", ")}).
+          </span>
+          <button
+            onClick={() => setShowAllCountries((v) => !v)}
+            className="shrink-0 text-xs font-semibold underline underline-offset-2 hover:text-amber-900 transition-colors"
+          >
+            Show all countries
+          </button>
+        </div>
+      )}
+      {showAllCountries && activeCountries.length > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-100 border border-slate-200 text-sm text-slate-600">
+          <Eye size={15} className="shrink-0 text-slate-400" />
+          <span className="flex-1">Showing keywords from all countries.</span>
+          <button
+            onClick={() => setShowAllCountries(false)}
+            className="shrink-0 text-xs font-semibold underline underline-offset-2 hover:text-slate-800 transition-colors"
+          >
+            Hide other countries
+          </button>
+        </div>
+      )}
+
       {/* ── Campaigns tab ────────────────────────────────────────────────────── */}
       {mainTab === "campaigns" && (
         <div className="space-y-3">
@@ -3377,6 +4682,42 @@ export default function KeywordsPage() {
           sub={`at ${effectiveAssumptions.closeRate}% close · $${effectiveAssumptions.avgDealSize.toLocaleString()} deal`}
         />
       </div>
+
+      {/* Empty state — no keywords for selected countries */}
+      {enrichedAll.length === 0 && activeCountries.length > 0 && !starterGenerated && (
+        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center space-y-4">
+          <Globe size={36} className="text-slate-300 mx-auto" />
+          <div>
+            <p className="text-sm font-semibold text-slate-700 mb-1">
+              No keywords yet for {activeCountries.join(", ")}
+            </p>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              The system dataset doesn&apos;t include {activeCountries.join(" / ")} rows.
+              Generate starter keywords using your project context, or create a campaign to get recommendations.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              onClick={handleGenerateStarters}
+              disabled={!activeProject}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Wand2 size={15} />
+              Generate starter keywords for {activeCountries.join(", ")}
+            </button>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-sm font-semibold transition-colors"
+            >
+              <Plus size={15} />
+              Create a campaign
+            </button>
+          </div>
+          {!activeProject && (
+            <p className="text-xs text-slate-400">Set up a project first to enable keyword generation.</p>
+          )}
+        </div>
+      )}
 
       {/* Competitor Intelligence */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -3495,7 +4836,9 @@ export default function KeywordsPage() {
                 <tr>
                   <td colSpan={COLUMNS.length} className="px-4 py-12 text-center text-sm text-slate-400">
                     {enrichedAll.length === 0
-                      ? "No keyword data available. Add keywords, load a preset pack, or adjust your target countries."
+                      ? activeCountries.length > 0
+                        ? `No keywords found for ${activeCountries.join(", ")}. Use the button above to generate starters.`
+                        : "No keyword data available. Add keywords, load a preset pack, or adjust your target countries."
                       : "No keywords match your current filters."}
                   </td>
                 </tr>
@@ -3887,6 +5230,11 @@ export default function KeywordsPage() {
       </div>
 
       </> /* end mainTab === "keywords" */}
+
+          </div>
+        )}
+      </div>
+
     </div>
   );
 }

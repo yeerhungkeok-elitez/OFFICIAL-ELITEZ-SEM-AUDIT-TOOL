@@ -78,11 +78,14 @@ export function exportKeywordsCsv(
     "Base Match Type",
     "Effective Match Type",
     "Action",
-    "Budget ($)",
+    "Monthly Budget ($)",
+    "Bid Low ($)",
+    "Bid High ($)",
     "Est. Clicks",
     "Est. Conversions",
     "CPA ($)",
     "Revenue ($)",
+    "ROAS",
     "Opportunity Score",
     "Intent",
     "Competition",
@@ -98,6 +101,12 @@ export function exportKeywordsCsv(
       ? isKeywordSuppressed(kw.keyword, kw.campaignId, kw.adGroupId, negativeKws)
       : false;
 
+    const bidLow  = +(kw.suggestedCpc * 0.7).toFixed(2);
+    const bidHigh = +(kw.suggestedCpc * 1.4).toFixed(2);
+    const roas    = kw.suggestedMonthlyBudget > 0
+      ? +(kw.revenuePotential / kw.suggestedMonthlyBudget).toFixed(2)
+      : 0;
+
     return [
       kw.keyword,
       kw.country,
@@ -108,10 +117,13 @@ export function exportKeywordsCsv(
       kw.effectiveMatchType,
       kw.effectiveAction,
       kw.suggestedMonthlyBudget > 0 ? kw.suggestedMonthlyBudget : 0,
+      bidLow,
+      bidHigh,
       kw.estimatedClicks  > 0 ? kw.estimatedClicks  : 0,
       kw.estimatedLeads   > 0 ? kw.estimatedLeads   : 0,
       kw.estimatedCpl     > 0 ? kw.estimatedCpl     : 0,
       kw.revenuePotential > 0 ? kw.revenuePotential : 0,
+      roas > 0 ? roas : 0,
       kw.opportunityScore,
       kw.intent,
       kw.competition,
@@ -182,6 +194,7 @@ export interface CampaignSummaryRow {
   leads:    number;
   cpa:      number;
   revenue:  number;
+  roas:     number;
 }
 
 export function exportCampaignSummaryCsv(
@@ -198,6 +211,7 @@ export function exportCampaignSummaryCsv(
     "Est. Conversions",
     "CPA ($)",
     "Revenue ($)",
+    "ROAS",
   ];
 
   const csvRows = rows.map((r) => [
@@ -207,8 +221,9 @@ export function exportCampaignSummaryCsv(
     r.pctTotal,
     r.kwCount,
     r.leads,
-    r.cpa    > 0 ? r.cpa    : 0,
+    r.cpa     > 0 ? r.cpa     : 0,
     r.revenue > 0 ? r.revenue : 0,
+    r.roas    > 0 ? r.roas    : 0,
   ]);
 
   downloadCsv(

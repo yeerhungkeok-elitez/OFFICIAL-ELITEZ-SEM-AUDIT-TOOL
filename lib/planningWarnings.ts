@@ -186,7 +186,7 @@ export function buildPlanningWarnings(
       id:      "missing-keyword-coverage",
       level:   "info",
       title:   `No keyword data for ${plural ? "1 selected country" : `${uncovered.length} selected countries`}`,
-      message: `${uncovered.join(", ")} ${plural ? "is" : "are"} not yet covered in the keyword research dataset. Budget cannot be allocated to ${plural ? "this market" : "these markets"}. The dataset currently covers Singapore, Malaysia, Vietnam, and Thailand.`,
+      message: `${uncovered.join(", ")} ${plural ? "is" : "are"} not yet covered in the keyword research dataset. Budget cannot be allocated to ${plural ? "this market" : "these markets"}. The dataset currently covers ${[...KEYWORD_COUNTRIES].join(", ")}.`,
     });
   }
 

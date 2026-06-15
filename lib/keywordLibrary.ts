@@ -49,6 +49,9 @@ export interface LibraryKeyword {
   // Campaign / Ad Group assignment (optional — undefined means unassigned)
   campaignId?:            string;
   adGroupId?:             string;
+  // Simplified bucket tag set by the recommend workflow (brand|generic|highIntent|competitor|pricing|local).
+  // Used by forecast grouping when no real campaignId is assigned.
+  campaignGroup?:         string;
 
   // All base Keyword fields (country is wider than the 4-value Country enum)
   keyword:                string;
@@ -99,6 +102,7 @@ export interface WorkspaceKeyword {
 
   campaignId?:            string;
   adGroupId?:             string;
+  campaignGroup?:         string;
 
   exclude:                boolean;
   forceBuy:               boolean;
@@ -135,13 +139,18 @@ export interface EnrichedWorkspaceKeyword extends WorkspaceKeyword {
   estimatedLeads:         number;
   estimatedCpl:           number;
   revenuePotential:       number;
+  roas:                   number;
   businessRelevanceScore: number;
+  // Debug / transparency fields from the forecast engine
+  estimatedImpressions?:  number;
+  estimatedCtr?:          number;
+  estimatedCvr?:          number;
 }
 
 // ─── Countries list (for dropdowns) ──────────────────────────────────────────
 
 export const LIBRARY_COUNTRIES = [
-  "Singapore", "Malaysia", "Vietnam", "Thailand",
+  "Singapore", "Malaysia", "Vietnam", "Thailand", "Indonesia",
   "Australia", "Canada", "Germany", "India",
   "New Zealand", "Philippines", "United Arab Emirates",
   "United Kingdom", "United States",
@@ -600,29 +609,87 @@ export function buildWorkspaceKeywords(
   return result;
 }
 
+// ─── Placeholder resolution ───────────────────────────────────────────────────
+
+/**
+ * Replaces all {placeholder} tokens in a keyword template string.
+ * Any remaining unreachable token (no real value to substitute) gets the
+ * curly-brace syntax stripped so the keyword stays human-readable.
+ */
+export function resolvePlaceholders(
+  keyword: string,
+  vars: { brand: string; service: string; country: string },
+): string {
+  const { brand, service, country } = vars;
+  const b = brand.trim().toLowerCase();
+  const s = service.trim().toLowerCase();
+  const c = country.trim();
+
+  let result = keyword
+    // Brand tokens
+    .replace(/\{brand-name\}/gi,     b || "your brand")
+    .replace(/\{your-brand\}/gi,     b || "your brand")
+    // Service / product tokens (all variants)
+    .replace(/\{product\/service\}/gi, s || "service")
+    .replace(/\{service\/person\}/gi,  s || "service")
+    .replace(/\{concept\/service\}/gi, s || "service")
+    .replace(/\{service\}/gi,          s || "service")
+    // Geo tokens — fall back to country when no city data
+    .replace(/\{city\/region\}/gi,   c)
+    .replace(/\{city\}/gi,           c)
+    .replace(/\{country\}/gi,        c)
+    // Audience token
+    .replace(/\{audience\}/gi,       "businesses")
+    // Problem-aware tokens — approximate with the service term
+    .replace(/\{solve problem\}/gi,  s ? `handle ${s}` : "solve this problem")
+    .replace(/\{problem\}/gi,        s ? `${s} challenges` : "business challenges")
+    // Competitor tokens — strip braces, keep as editable placeholder
+    .replace(/\{competitor\}/gi,     "competitor")
+    .replace(/\{alternative\}/gi,    "alternative")
+    // Catch-all: strip any remaining {tokens} so no curly braces survive
+    .replace(/\{[^}]+\}/g,           "");
+
+  // Collapse multiple spaces that may appear after removal
+  return result.replace(/\s{2,}/g, " ").trim();
+}
+
 // ─── Preset pack helpers ──────────────────────────────────────────────────────
 
-/** Build LibraryKeyword entries for a named preset pack. */
-export function buildPresetPackKeywords(packName: string): LibraryKeyword[] {
+/** Build LibraryKeyword entries for a named preset pack.
+ *  If targetCountries is provided, country is assigned from that list instead
+ *  of the hardcoded template value. Single country → all keywords use it.
+ *  Multiple countries → one copy of every keyword per country.
+ *  If profile is provided, all {placeholder} tokens are resolved with real values. */
+export function buildPresetPackKeywords(
+  packName:        string,
+  targetCountries?: string[],
+  profile?:        ProjectProfile,
+): LibraryKeyword[] {
   const pack = PRESET_PACKS.find((p) => p.name === packName);
   if (!pack) return [];
 
-  return pack.keywords.map((t) => {
+  const countries = targetCountries && targetCountries.length > 0 ? targetCountries : null;
+  const now = new Date().toISOString();
+
+  function makeKw(t: PresetKeywordTemplate, country: string): LibraryKeyword {
     const derived = deriveKeywordFields({
       intent:                  t.intent,
       competition:             t.competition,
       competitorPressureScore: t.competitorPressureScore,
       estimatedCpc:            t.estimatedCpc,
     });
+    const resolvedKeyword = profile
+      ? resolvePlaceholders(t.keyword, { brand: profile.brand, service: profile.offer, country })
+      : t.keyword;
     return {
       id:                      nextKwId(),
       source:                  "preset" as const,
       packName,
-      category:                pack.category,
+      category:                pack!.category,
       note:                    "",
-      createdAt:               new Date().toISOString(),
-      keyword:                 t.keyword,
-      country:                 t.country,
+      createdAt:               now,
+      keyword:                 resolvedKeyword,
+      country,
       intent:                  t.intent,
       matchType:               t.matchType,
       monthlySearches:         t.monthlySearches,
@@ -637,41 +704,74 @@ export function buildPresetPackKeywords(packName: string): LibraryKeyword[] {
       forceBuy:                false,
       forceTest:               false,
     };
-  });
+  }
+
+  const results: LibraryKeyword[] = [];
+  for (const t of pack.keywords) {
+    if (!countries) {
+      results.push(makeKw(t, t.country));
+    } else if (countries.length === 1) {
+      results.push(makeKw(t, countries[0]));
+    } else {
+      for (const country of countries) {
+        results.push(makeKw(t, country));
+      }
+    }
+  }
+  return results;
 }
 
 /** Maps a campaign type to preset pack names and builds recommended starter keywords. */
 const CAMPAIGN_TYPE_PACKS: Record<string, string[]> = {
-  brand:        ["Brand Defense"],
-  generic:      ["Commercial Intent", "Problem-Aware"],
+  brand:         ["Brand Defense"],
+  generic:       ["Commercial Intent", "Problem-Aware"],
   "high-intent": ["Purchase Intent", "Urgent / Action Intent"],
-  competitor:   ["Competitor Displacement", "Comparison / Best-of"],
-  custom:       [],
+  competitor:    ["Competitor Displacement", "Comparison / Best-of"],
+  pricing:       ["Purchase Intent"],
+  local:         ["Local / Geo Intent"],
+  niche:         ["Commercial Intent", "Problem-Aware"],
+  custom:        [],
 };
 
-export function buildCampaignTypeKeywords(campaignType: string, campaignId: string): LibraryKeyword[] {
+/** Maps a campaign type to starter keywords from the matching preset packs.
+ *  targetCountries behaves the same as in buildPresetPackKeywords:
+ *  single → all use that country, multiple → one copy per country, absent → template default.
+ *  If profile is provided, all {placeholder} tokens are resolved with real values. */
+export function buildCampaignTypeKeywords(
+  campaignType:    string,
+  campaignId:      string,
+  targetCountries?: string[],
+  profile?:        ProjectProfile,
+): LibraryKeyword[] {
   const packNames = CAMPAIGN_TYPE_PACKS[campaignType] ?? [];
+  const countries = targetCountries && targetCountries.length > 0 ? targetCountries : null;
+  const now = new Date().toISOString();
   const results: LibraryKeyword[] = [];
+
   for (const packName of packNames) {
     const pack = PRESET_PACKS.find((p) => p.name === packName);
     if (!pack) continue;
-    for (const t of pack.keywords) {
+
+    const makeKw = (t: PresetKeywordTemplate, country: string): LibraryKeyword => {
       const derived = deriveKeywordFields({
         intent:                  t.intent,
         competition:             t.competition,
         competitorPressureScore: t.competitorPressureScore,
         estimatedCpc:            t.estimatedCpc,
       });
-      results.push({
+      const resolvedKeyword = profile
+        ? resolvePlaceholders(t.keyword, { brand: profile.brand, service: profile.offer, country })
+        : t.keyword;
+      return {
         id:                      nextKwId(),
         source:                  "recommended" as const,
         packName,
-        category:                pack.category,
+        category:                pack!.category,
         note:                    "",
-        createdAt:               new Date().toISOString(),
+        createdAt:               now,
         campaignId,
-        keyword:                 t.keyword,
-        country:                 t.country,
+        keyword:                 resolvedKeyword,
+        country,
         intent:                  t.intent,
         matchType:               t.matchType,
         monthlySearches:         t.monthlySearches,
@@ -685,7 +785,19 @@ export function buildCampaignTypeKeywords(campaignType: string, campaignId: stri
         exclude:                 false,
         forceBuy:                false,
         forceTest:               false,
-      });
+      };
+    };
+
+    for (const t of pack.keywords) {
+      if (!countries) {
+        results.push(makeKw(t, t.country));
+      } else if (countries.length === 1) {
+        results.push(makeKw(t, countries[0]));
+      } else {
+        for (const country of countries) {
+          results.push(makeKw(t, country));
+        }
+      }
     }
   }
   return results;
@@ -694,6 +806,299 @@ export function buildCampaignTypeKeywords(campaignType: string, campaignId: stri
 /** Check which pack names are already in the library. */
 export function addedPackNames(libraryKws: LibraryKeyword[]): Set<string> {
   return new Set(libraryKws.filter((k) => k.source === "preset").map((k) => k.packName));
+}
+
+// ─── Dynamic campaign keyword generator ──────────────────────────────────────
+// Generates project-aware, country-specific starter keywords for any country,
+// including markets not covered by the static system keyword dataset (e.g. Indonesia).
+
+export interface ProjectProfile {
+  brand: string;  // project name / brand
+  offer: string;  // primary offer (serviceType → offerType → industry as fallback)
+}
+
+function countryCpcScale(country: string): number {
+  const s: Record<string, number> = {
+    "Singapore":            1.00, "Australia":            1.05,
+    "United States":        1.15, "United Kingdom":       1.05,
+    "Canada":               0.92, "New Zealand":          0.90,
+    "Germany":              0.85, "United Arab Emirates": 0.88,
+    "Malaysia":             0.65, "Thailand":             0.55,
+    "Philippines":          0.42, "Indonesia":            0.45,
+    "Vietnam":              0.40, "India":                0.35,
+  };
+  return s[country] ?? 0.60;
+}
+
+function countrySearchScale(country: string): number {
+  const s: Record<string, number> = {
+    "Singapore":            1.00, "Australia":            2.20,
+    "United States":        8.00, "United Kingdom":       3.50,
+    "Canada":               1.80, "New Zealand":          0.80,
+    "Germany":              2.50, "United Arab Emirates": 1.20,
+    "Malaysia":             1.80, "Thailand":             2.00,
+    "Philippines":          1.50, "Indonesia":            2.80,
+    "Vietnam":              1.60, "India":                5.00,
+  };
+  return s[country] ?? 1.00;
+}
+
+interface DynTemplate {
+  keyword:                 string;
+  category:                KeywordCategory;
+  intent:                  Intent;
+  matchType:               MatchType;
+  competition:             Competition;
+  baseCpc:                 number;
+  competitorPressureScore: number;
+  baseSearches:            number;
+}
+
+/** User-controlled inputs that override profile-derived values during generation. */
+export interface UserKeywordInputs {
+  services?:    string[];   // e.g. ["Employer of Record", "EOR", "Headhunting"]
+  actions?:     string[];   // e.g. ["hire", "need", "find", "outsource"]  — used by high-intent
+  competitors?: string[];   // e.g. ["Manpower", "Adecco"]               — used by competitor
+}
+
+function dynTemplates(
+  type:        string,
+  brand:       string,
+  offer:       string,
+  country:     string,
+  actions?:    string[],
+  comps?:      string[],
+): DynTemplate[] {
+  const b = brand.toLowerCase();
+  const o = offer.toLowerCase();
+  const c = country;
+
+  switch (type) {
+    case "brand":
+      return [
+        ...(b ? [
+          { keyword: b,                   category: "brand" as KeywordCategory, intent: "Navigational" as Intent, matchType: "Exact"  as MatchType, competition: "Low" as Competition, baseCpc: 1.50, competitorPressureScore: 8,  baseSearches: 320 },
+          { keyword: `${b} ${c}`,         category: "brand" as KeywordCategory, intent: "Navigational" as Intent, matchType: "Phrase" as MatchType, competition: "Low" as Competition, baseCpc: 1.80, competitorPressureScore: 12, baseSearches: 180 },
+          { keyword: `${b} reviews`,      category: "brand" as KeywordCategory, intent: "Navigational" as Intent, matchType: "Phrase" as MatchType, competition: "Low" as Competition, baseCpc: 1.80, competitorPressureScore: 12, baseSearches: 200 },
+          { keyword: `${b} pricing`,      category: "brand" as KeywordCategory, intent: "Commercial"   as Intent, matchType: "Exact"  as MatchType, competition: "Low" as Competition, baseCpc: 2.50, competitorPressureScore: 18, baseSearches: 140 },
+          ...(o ? [{ keyword: `${b} ${o}`, category: "brand" as KeywordCategory, intent: "Commercial" as Intent, matchType: "Phrase" as MatchType, competition: "Low" as Competition, baseCpc: 2.20, competitorPressureScore: 15, baseSearches: 160 }] : []),
+        ] : []),
+      ];
+
+    case "generic":
+      return [
+        { keyword: `${o} ${c}`,               category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 6.00, competitorPressureScore: 68, baseSearches: 720 },
+        { keyword: `${o} company ${c}`,       category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 5.20, competitorPressureScore: 63, baseSearches: 540 },
+        { keyword: `${o} services ${c}`,      category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 4.20, competitorPressureScore: 50, baseSearches: 480 },
+        { keyword: `best ${o} ${c}`,          category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 6.00, competitorPressureScore: 68, baseSearches: 720 },
+        { keyword: `${o} agency ${c}`,        category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 5.80, competitorPressureScore: 66, baseSearches: 680 },
+        { keyword: `top ${o} companies ${c}`, category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 5.50, competitorPressureScore: 65, baseSearches: 580 },
+      ] as DynTemplate[];
+
+    case "high-intent": {
+      const acts = (actions && actions.length > 0)
+        ? actions.map((a) => a.trim().toLowerCase()).filter(Boolean)
+        : ["hire", "need", "get", "looking for"];
+      const rows: DynTemplate[] = acts.map((a) => ({
+        keyword:                 `${a} ${o} ${c}`,
+        category:                "purchase" as KeywordCategory,
+        intent:                  "Transactional" as Intent,
+        matchType:               (a.includes(" ") ? "Phrase" : "Exact") as MatchType,
+        competition:             "High" as Competition,
+        baseCpc:                 8.00,
+        competitorPressureScore: 76,
+        baseSearches:            440,
+      }));
+      rows.push({ keyword: `${o} quote ${c}`,  category: "purchase", intent: "Transactional", matchType: "Exact",  competition: "High",   baseCpc: 8.50, competitorPressureScore: 80, baseSearches: 520 } as DynTemplate);
+      rows.push({ keyword: `${o} near me`,     category: "urgent",   intent: "Transactional", matchType: "Phrase", competition: "Medium", baseCpc: 4.20, competitorPressureScore: 42, baseSearches: 680 } as DynTemplate);
+      return rows;
+    }
+
+    case "competitor": {
+      if (comps && comps.length > 0) {
+        const rows: DynTemplate[] = [];
+        for (const comp of comps) {
+          const cl = comp.trim().toLowerCase();
+          rows.push({ keyword: `${cl} ${c}`,                    category: "competitor",  intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 6.00, competitorPressureScore: 58, baseSearches: 200 } as DynTemplate);
+          rows.push({ keyword: `${cl} alternative ${c}`,        category: "competitor",  intent: "Commercial", matchType: "Exact",  competition: "Medium", baseCpc: 7.20, competitorPressureScore: 62, baseSearches: 210 } as DynTemplate);
+          rows.push({ keyword: `${cl} vs ${b || o}`,            category: "comparison",  intent: "Commercial", matchType: "Phrase", competition: "Low",    baseCpc: 5.00, competitorPressureScore: 38, baseSearches: 90  } as DynTemplate);
+        }
+        // Always append generic alternatives even with real competitors
+        rows.push({ keyword: `best ${o} alternative ${c}`,  category: "competitor", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 6.80, competitorPressureScore: 58, baseSearches: 180 } as DynTemplate);
+        rows.push({ keyword: `${o} comparison ${c}`,        category: "comparison", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 4.50, competitorPressureScore: 48, baseSearches: 260 } as DynTemplate);
+        return rows;
+      }
+      return [
+        { keyword: `${o} alternative ${c}`,      category: "competitor",  intent: "Commercial", matchType: "Exact",  competition: "Medium", baseCpc: 7.20, competitorPressureScore: 62, baseSearches: 210 },
+        { keyword: `best ${o} alternative ${c}`, category: "competitor",  intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 6.80, competitorPressureScore: 58, baseSearches: 180 },
+        { keyword: `${o} comparison ${c}`,       category: "comparison",  intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 4.50, competitorPressureScore: 48, baseSearches: 260 },
+        { keyword: `switch from ${o} ${c}`,      category: "competitor",  intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 6.20, competitorPressureScore: 52, baseSearches: 140 },
+        ...(b ? [{ keyword: `${o} vs ${b}`, category: "comparison" as KeywordCategory, intent: "Commercial" as Intent, matchType: "Phrase" as MatchType, competition: "Low" as Competition, baseCpc: 5.00, competitorPressureScore: 38, baseSearches: 90 }] : []),
+      ] as DynTemplate[];
+    }
+
+    case "pricing":
+      return [
+        { keyword: `${o} cost ${c}`,        category: "purchase",   intent: "Transactional", matchType: "Phrase", competition: "Medium", baseCpc: 4.80, competitorPressureScore: 50, baseSearches: 680 },
+        { keyword: `${o} pricing ${c}`,     category: "purchase",   intent: "Transactional", matchType: "Exact",  competition: "Medium", baseCpc: 5.20, competitorPressureScore: 48, baseSearches: 400 },
+        { keyword: `${o} fees ${c}`,        category: "purchase",   intent: "Transactional", matchType: "Phrase", competition: "Low",    baseCpc: 3.80, competitorPressureScore: 34, baseSearches: 280 },
+        { keyword: `affordable ${o} ${c}`,  category: "commercial", intent: "Commercial",    matchType: "Phrase", competition: "Medium", baseCpc: 4.00, competitorPressureScore: 42, baseSearches: 360 },
+        { keyword: `${o} packages ${c}`,    category: "commercial", intent: "Commercial",    matchType: "Phrase", competition: "Low",    baseCpc: 3.50, competitorPressureScore: 30, baseSearches: 200 },
+      ] as DynTemplate[];
+
+    case "local":
+      return [
+        { keyword: `${o} near me`,      category: "local", intent: "Transactional", matchType: "Phrase", competition: "Medium", baseCpc: 4.20, competitorPressureScore: 42, baseSearches: 680 },
+        { keyword: `${o} in ${c}`,      category: "local", intent: "Transactional", matchType: "Exact",  competition: "Medium", baseCpc: 4.80, competitorPressureScore: 46, baseSearches: 540 },
+        { keyword: `${o} ${c}`,         category: "local", intent: "Transactional", matchType: "Exact",  competition: "Medium", baseCpc: 5.00, competitorPressureScore: 48, baseSearches: 560 },
+        { keyword: `local ${o} ${c}`,   category: "local", intent: "Transactional", matchType: "Phrase", competition: "Low",    baseCpc: 2.80, competitorPressureScore: 28, baseSearches: 320 },
+        { keyword: `best ${o} in ${c}`, category: "local", intent: "Commercial",    matchType: "Phrase", competition: "High",   baseCpc: 5.50, competitorPressureScore: 60, baseSearches: 440 },
+      ] as DynTemplate[];
+
+    case "niche":
+      return [
+        { keyword: `${o} for small business ${c}`, category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 5.00, competitorPressureScore: 50, baseSearches: 320 },
+        { keyword: `professional ${o} ${c}`,       category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 4.80, competitorPressureScore: 46, baseSearches: 280 },
+        { keyword: `${o} specialist ${c}`,         category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 5.20, competitorPressureScore: 52, baseSearches: 260 },
+        { keyword: `enterprise ${o} ${c}`,         category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "High",   baseCpc: 6.50, competitorPressureScore: 70, baseSearches: 380 },
+        { keyword: `${o} solutions ${c}`,          category: "commercial", intent: "Commercial", matchType: "Phrase", competition: "Medium", baseCpc: 4.20, competitorPressureScore: 50, baseSearches: 480 },
+      ] as DynTemplate[];
+
+    default:
+      return [];
+  }
+}
+
+/**
+ * Generates project-aware starter keywords for a campaign type across all target countries.
+ * Works for any country including markets absent from the static system dataset (e.g. Indonesia).
+ * When userInputs is provided, user-supplied services / actions / competitors take full priority
+ * over profile-derived values — no system guesses.
+ */
+export function buildDynamicCampaignKeywords(
+  campaignType: string,
+  campaignId:   string,
+  profile:      ProjectProfile,
+  countries:    string[],
+  userInputs?:  UserKeywordInputs,
+): LibraryKeyword[] {
+  // Determine the list of services to generate keywords for.
+  // User-supplied list wins; fall back to profile.offer → profile.brand.
+  const userServices = (userInputs?.services ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const fallbackOffer = (profile.offer || profile.brand).toLowerCase().trim();
+  const services = userServices.length > 0 ? userServices : (fallbackOffer ? [fallbackOffer] : []);
+  if (services.length === 0) return [];
+
+  const targetCountries = countries.length > 0 ? countries : ["Singapore"];
+  const now     = new Date().toISOString();
+  const results: LibraryKeyword[] = [];
+  const seen    = new Set<string>();
+
+  for (const country of targetCountries) {
+    const cpcScale    = countryCpcScale(country);
+    const searchScale = countrySearchScale(country);
+
+    for (const svc of services) {
+      const templates = dynTemplates(
+        campaignType,
+        profile.brand,
+        svc,
+        country,
+        userInputs?.actions,
+        userInputs?.competitors,
+      );
+
+      for (const t of templates) {
+        const key = `${t.keyword}|${country}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const cpc      = Number((t.baseCpc * cpcScale).toFixed(2));
+        const searches = Math.max(50, Math.round(t.baseSearches * searchScale));
+        const derived  = deriveKeywordFields({
+          intent:                  t.intent,
+          competition:             t.competition,
+          competitorPressureScore: t.competitorPressureScore,
+          estimatedCpc:            cpc,
+        });
+
+        results.push({
+          id:                      nextKwId(),
+          source:                  "recommended" as const,
+          packName:                "",
+          category:                t.category,
+          note:                    "",
+          createdAt:               now,
+          campaignId,
+          keyword:                 t.keyword,
+          country,
+          intent:                  t.intent,
+          matchType:               t.matchType,
+          monthlySearches:         searches,
+          competition:             t.competition,
+          estimatedCpc:            cpc,
+          competitorPressureScore: t.competitorPressureScore,
+          competitorExamples:      [],
+          strategyNote:            "",
+          recommendationNote:      "",
+          ...derived,
+          exclude:                 false,
+          forceBuy:                false,
+          forceTest:               false,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+// ─── Project starter keyword generation ──────────────────────────────────────
+
+/** Minimal project shape required by generateStarterKeywordsForProject. */
+export interface StarterProjectContext {
+  projectName: string;
+  serviceType: string;
+  offerType:   string;
+  industry:    string;
+}
+
+/**
+ * Generates a full set of starter keywords for a new project across all
+ * selected countries, covering Brand, Generic, High-Intent, Competitor,
+ * Pricing and Local campaign archetypes.
+ *
+ * Keywords are unassigned (no campaignId) so the user can create campaigns
+ * and assign them freely. All placeholders are already resolved; no {tokens}.
+ */
+export function generateStarterKeywordsForProject(
+  project:  StarterProjectContext,
+  countries: string[],
+): LibraryKeyword[] {
+  const brand  = project.projectName.trim();
+  const offer  = (project.serviceType || "").trim();
+  if (!offer && !brand) return [];
+
+  const profile: ProjectProfile = { brand, offer };
+  const targetCountries = countries.length > 0 ? countries : ["Singapore"];
+
+  const STARTER_TYPES = ["brand", "generic", "high-intent", "competitor", "pricing", "local"] as const;
+
+  const results: LibraryKeyword[] = [];
+  const seen = new Set<string>();
+
+  for (const type of STARTER_TYPES) {
+    const kws = buildDynamicCampaignKeywords(type, "", profile, targetCountries);
+    for (const kw of kws) {
+      const key = `${kw.keyword}|${kw.country}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ ...kw, campaignId: undefined, adGroupId: undefined });
+      }
+    }
+  }
+
+  return results;
 }
 
 // ─── Keyword Generator ────────────────────────────────────────────────────────
@@ -725,6 +1130,7 @@ function inferCountry(term: string, candidates: string[]): string | undefined {
     "United States":        ["united states", "usa", "new york", "los angeles", "chicago", "san francisco", "houston", "seattle", "boston"],
     "United Kingdom":       ["united kingdom", "uk", "london", "manchester", "birmingham", "edinburgh", "glasgow"],
     "India":                ["india", "mumbai", "delhi", "bangalore", "bengaluru", "chennai", "hyderabad", "pune"],
+    "Indonesia":            ["indonesia", "jakarta", "bali", "surabaya", "bandung", "medan", "semarang", "yogyakarta"],
     "Philippines":          ["philippines", "manila", "cebu", "davao"],
     "United Arab Emirates": ["uae", "united arab emirates", "dubai", "abu dhabi", "sharjah"],
     "Germany":              ["germany", "berlin", "munich", "hamburg", "frankfurt", "cologne"],
@@ -859,6 +1265,17 @@ export function generateKeywords(inputs: GeneratorInputs): LibraryKeyword[] {
   push({ keyword: `emergency ${offer}`,         category: "urgent", intent: "Transactional", matchType: "Exact",  competition: "Medium", estimatedCpc: 5.80, competitorPressureScore: 46, monthlySearches: 160 });
   push({ keyword: `fast ${offer}`,              category: "urgent", intent: "Transactional", matchType: "Phrase", competition: "Low",    estimatedCpc: 5.00, competitorPressureScore: 38, monthlySearches: 200 });
   push({ keyword: `${offer} immediately`,       category: "urgent", intent: "Transactional", matchType: "Phrase", competition: "Low",    estimatedCpc: 4.50, competitorPressureScore: 34, monthlySearches: 120 });
+
+  // ── Replicate non-geo keywords for each additional selected country ───────────
+  if (targetCountries.length > 1) {
+    const baseRows = rows.filter((r) => r.country === main);
+    for (const country of targetCountries.slice(1)) {
+      for (const r of baseRows) {
+        const key = `${r.keyword}|${country}`;
+        if (!seen.has(key)) { seen.add(key); rows.push({ ...r, country }); }
+      }
+    }
+  }
 
   // ── Build LibraryKeyword[] ───────────────────────────────────────────────────
   const now = new Date().toISOString();

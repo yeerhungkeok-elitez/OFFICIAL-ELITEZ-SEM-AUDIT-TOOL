@@ -13,15 +13,22 @@ import {
   KEYWORD_COUNTRIES,
   type PriorityLevel,
 } from "@/lib/keywordEngine";
-import { allocateBudgets, buildCountryForecasts } from "@/lib/forecastEngine";
+import {
+  allocateBudgets, buildCountryForecasts, enrich,
+  SCENARIO_SPECS, computeScenarioForecast,
+  type ScenarioForecast,
+} from "@/lib/forecastEngine";
 import {
   getForecastAssumptions,
   DEFAULT_FORECAST_ASSUMPTIONS,
+  buildMatchTypeModifiers,
   type ForecastAssumptions,
 } from "@/lib/forecastAssumptionsStore";
-import { exportForecastCsv } from "@/lib/csvExport";
-import { applyScenario, type Scenario } from "@/lib/scenarioStore";
+import { exportForecastCsv, exportCampaignSummaryCsv, type CampaignSummaryRow } from "@/lib/csvExport";
+import { applyScenario } from "@/lib/scenarioStore";
 import { useAppContext } from "@/context/AppContext";
+import { getLibraryKeywords, getSystemOverrides, buildWorkspaceKeywords } from "@/lib/keywordLibrary";
+import { getCampaigns, getAdGroups, CAMPAIGN_TYPE_LABELS, CAMPAIGN_TYPE_STYLES } from "@/lib/campaignStore";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -111,59 +118,12 @@ function SplitBar({ buyBudget, testBudget }: { buyBudget: number; testBudget: nu
   );
 }
 
-// ─── Scenario comparison helpers ──────────────────────────────────────────────
-
-interface ScenarioTotals {
-  scenario: Scenario;
-  budget: number;
-  leads: number;
-  cpl: number;
-  revenue: number;
-}
-
-function computeScenarioTotals(
-  baseAssumptions: ProjectAssumptions,
-  scenario: Scenario
-): ScenarioTotals {
-  const eff = applyScenario(baseAssumptions, scenario);
-  const inScope = KEYWORDS.filter((k) =>
-    eff.targetCountries
-      .filter((c) => (KEYWORD_COUNTRIES as readonly string[]).includes(c))
-      .includes(k.country)
-  );
-  const kws = inScope.map((k) => ({ ...k, suggestedCpc: k.suggestedCpc * scenario.cpcMultiplier }));
-  const bMap = allocateBudgets(kws, eff.monthlyBudget);
-  let budget = 0, leads = 0, revenue = 0;
-  for (const kw of kws) {
-    const b = bMap.get(kw.id) ?? 0;
-    budget += b;
-    const clicks = b > 0 ? Math.floor(b / kw.suggestedCpc) : 0;
-    const l = Math.round(clicks * (eff.lpConversionRate / 100));
-    leads += l;
-    const deals = Math.round(l * (eff.closeRate / 100));
-    revenue += deals * eff.avgDealSize;
-  }
-  const cpl = leads > 0 ? Math.round(budget / leads) : 0;
-  return { scenario, budget, leads, cpl, revenue };
-}
-
-const SCENARIO_ORDER = ["Conservative", "Balanced", "Aggressive"];
-
-function sortScenarios(scenarios: Scenario[]): Scenario[] {
-  return [...scenarios].sort((a, b) => {
-    const ai = SCENARIO_ORDER.indexOf(a.name);
-    const bi = SCENARIO_ORDER.indexOf(b.name);
-    if (ai !== -1 && bi !== -1) return ai - bi;
-    if (ai !== -1) return -1;
-    if (bi !== -1) return 1;
-    return a.name.localeCompare(b.name);
-  });
-}
+// (Scenario outlook is computed inline via computeScenarioForecast — no page-level helpers needed)
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ForecastPage() {
-  const { activeProject, activeScenario, scenarios: allScenarios } = useAppContext();
+  const { activeProject, activeScenario } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
   const assumptions: ProjectAssumptions = useMemo(
@@ -180,33 +140,55 @@ export default function ForecastPage() {
     ));
   }, [activeProject]);
 
+  // Workspace data for Campaign Summary section
+  const [wsCampaigns, setWsCampaigns] = useState(() => getCampaigns());
+  const [wsAdGroups,  setWsAdGroups]  = useState(() => getAdGroups());
+  const [wsLibKws,    setWsLibKws]    = useState(() => getLibraryKeywords());
+  const [wsSysOvr,    setWsSysOvr]    = useState(() => getSystemOverrides());
+  useEffect(() => {
+    setWsCampaigns(getCampaigns());
+    setWsAdGroups(getAdGroups());
+    setWsLibKws(getLibraryKeywords());
+    setWsSysOvr(getSystemOverrides());
+  }, [activeProject]);
+
   // Effective assumptions with scenario multipliers applied
   const effectiveAssumptions = useMemo(
     () => scenario ? applyScenario(assumptions, scenario) : assumptions,
     [assumptions, scenario]
   );
 
-  // Countries from the project that actually have keyword data
-  const inScopeCountries = useMemo(
-    () => effectiveAssumptions.targetCountries.filter((c) => (KEYWORD_COUNTRIES as readonly string[]).includes(c)),
-    [effectiveAssumptions.targetCountries]
-  );
+  // All target countries that have any data (system OR library keywords)
+  const inScopeCountries = useMemo(() => {
+    const libCountries = new Set(wsLibKws.map((k) => k.country));
+    return effectiveAssumptions.targetCountries.filter(
+      (c) => (KEYWORD_COUNTRIES as readonly string[]).includes(c) || libCountries.has(c)
+    );
+  }, [effectiveAssumptions.targetCountries, wsLibKws]);
 
-  const missingCountries = useMemo(
-    () => effectiveAssumptions.targetCountries.filter((c) => !(KEYWORD_COUNTRIES as readonly string[]).includes(c)),
-    [effectiveAssumptions.targetCountries]
-  );
+  // Countries with truly no data at all
+  const missingCountries = useMemo(() => {
+    const libCountries = new Set(wsLibKws.map((k) => k.country));
+    return effectiveAssumptions.targetCountries.filter(
+      (c) => !(KEYWORD_COUNTRIES as readonly string[]).includes(c) && !libCountries.has(c)
+    );
+  }, [effectiveAssumptions.targetCountries, wsLibKws]);
 
-  // Keywords with CPC multiplier applied
+  // Keywords with CPC multiplier applied (system only — used for scenario comparison)
   const scenarioKws = useMemo(() => {
     const mult = scenario?.cpcMultiplier ?? 1.0;
     return KEYWORDS.map((k) => ({ ...k, suggestedCpc: k.suggestedCpc * mult }));
   }, [scenario]);
 
-  const inScopeKws = useMemo(
-    () => scenarioKws.filter((k) => inScopeCountries.includes(k.country)),
-    [scenarioKws, inScopeCountries]
-  );
+  // Unified forecast keywords: system + library, filtered to all target countries
+  const inScopeKws = useMemo(() => {
+    const cpcMult = scenario?.cpcMultiplier ?? 1.0;
+    const ws = buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
+    const targetSet = new Set(effectiveAssumptions.targetCountries);
+    return ws
+      .filter((kw) => targetSet.has(kw.country) && kw.effectiveAction !== "No")
+      .map((kw) => ({ ...kw, action: kw.effectiveAction })) as never[];
+  }, [scenarioKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries, scenario]);
 
   const budgetMap = useMemo(
     () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget),
@@ -214,22 +196,16 @@ export default function ForecastPage() {
   );
 
   const rawTotals = useMemo(() => {
-    let totalLeads = 0, totalRevenue = 0;
-    for (const kw of inScopeKws) {
-      if (kw.action === "No") continue;
-      const b = budgetMap.get(kw.id) ?? 0;
-      const c = b > 0 ? Math.floor(b / kw.suggestedCpc) : 0;
-      const l = Math.round(c * (effectiveAssumptions.lpConversionRate / 100));
-      const deals = Math.round(l * (effectiveAssumptions.closeRate / 100));
-      totalLeads   += l;
-      totalRevenue += deals * effectiveAssumptions.avgDealSize;
-    }
-    return { totalLeads, totalRevenue };
+    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions);
+    return {
+      totalLeads:   enriched.reduce((s, k) => s + k.estimatedLeads,    0),
+      totalRevenue: enriched.reduce((s, k) => s + k.revenuePotential,  0),
+    };
   }, [inScopeKws, budgetMap, effectiveAssumptions]);
 
   const countryForecasts = useMemo(
     () => buildCountryForecasts(
-      inScopeKws, budgetMap, effectiveAssumptions,
+      inScopeKws as never, budgetMap, effectiveAssumptions,
       rawTotals.totalRevenue, rawTotals.totalLeads,
       fa.sqlRate / 100,
     ).sort((a, b) => b.revenue - a.revenue),
@@ -254,13 +230,118 @@ export default function ForecastPage() {
   const maxRevenue = Math.max(...countryForecasts.map((c) => c.revenue), 1);
   const roi = totals.budget > 0 ? (totals.revenue / totals.budget).toFixed(1) : "—";
 
-  // Scenario comparison — only when project exists and ≥2 scenarios
-  const scenarioComparison = useMemo<ScenarioTotals[]>(() => {
-    if (!isProjectSet || allScenarios.length < 2) return [];
-    return sortScenarios(allScenarios).map((s) =>
-      computeScenarioTotals(assumptions, s)
+  // Diagnose why forecast is $0
+  const zeroBudgetDiagnosis = useMemo(() => {
+    if (totals.budget > 0) return null;
+    if (effectiveAssumptions.monthlyBudget === 0)
+      return { msg: "Monthly budget is $0.", fix: "Set a budget in your project.", href: activeProject ? `/projects/${activeProject.id}/edit` : "/projects/new" };
+    if (wsLibKws.length === 0)
+      return { msg: "No keywords have been generated yet.", fix: "Go to the Keywords page and click Recommend Keywords to get started.", href: "/keywords" };
+    const libCountries = Array.from(new Set(wsLibKws.map((k) => k.country)));
+    const targetSet    = new Set(effectiveAssumptions.targetCountries);
+    const hasCountryMatch = libCountries.some((c) => targetSet.has(c));
+    if (!hasCountryMatch)
+      return { msg: `Your library keywords are for ${libCountries.join(", ")} but your project targets ${effectiveAssumptions.targetCountries.join(", ")}.`, fix: "Re-generate keywords or update your project's target countries.", href: "/keywords" };
+    const allNoAction = wsLibKws.every((k) => k.action === "No" || k.action === undefined);
+    if (allNoAction)
+      return { msg: "All keywords are set to No action — none will receive budget.", fix: "Visit the Keywords page and enable some keywords (set to Buy or Test).", href: "/keywords" };
+    const zeroCpc = (inScopeKws as { suggestedCpc: number }[]).some((k) => k.suggestedCpc <= 0);
+    if (zeroCpc)
+      return { msg: "Some active keywords have a $0 CPC, so no budget can be allocated.", fix: "Check the Keywords page for keywords with missing CPC values.", href: "/keywords" };
+    return { msg: "Budget could not be allocated to any active keywords.", fix: "Check that your keywords have a Buy or Test action and a valid CPC.", href: "/keywords" };
+  }, [totals.budget, effectiveAssumptions, wsLibKws, inScopeKws, activeProject]);
+
+  // Campaign Summary — enriched workspace keywords grouped by campaign / bucket
+  const campaignSummary = useMemo<CampaignSummaryRow[]>(() => {
+    const BUCKET_LABELS: Record<string, string> = {
+      brand:      "Brand",
+      generic:    "Generic / Service",
+      highIntent: "High Intent",
+      competitor: "Competitor",
+      pricing:    "Pricing / Cost",
+      local:      "Local / Geo",
+    };
+
+    const cpcMult = scenario?.cpcMultiplier ?? 1.0;
+    const workspaceKws = buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
+    const targetSet = new Set(effectiveAssumptions.targetCountries);
+    const inScope = workspaceKws.filter((k) =>
+      targetSet.has(k.country) && k.effectiveAction !== "No"
     );
-  }, [isProjectSet, allScenarios, assumptions]);
+    if (inScope.length === 0) return [];
+
+    const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget);
+    const enriched = enrich(inScope as never, bMap, effectiveAssumptions, {
+      matchMods:             buildMatchTypeModifiers(fa),
+      brandCvrUplift:        fa.brandCvrUplift,
+      competitorCvrDiscount: fa.competitorCvrDiscount,
+      cpcMultiplier:         fa.cpcMultiplier,
+    });
+
+    const totalBudget = enriched.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+
+    // Group by: real campaign ID → bucket group → single "Unassigned" bucket
+    const groups = new Map<string, typeof enriched>();
+    for (const kw of enriched) {
+      const cId    = (kw as { campaignId?: string }).campaignId;
+      const cGroup = (kw as { campaignGroup?: string }).campaignGroup;
+      const key    = cId ? `campaign:${cId}` : cGroup ? `bucket:${cGroup}` : "__unassigned__";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(kw);
+    }
+
+    const rows: CampaignSummaryRow[] = [];
+    for (const [key, kws] of Array.from(groups.entries())) {
+      let name: string;
+      if (key.startsWith("campaign:")) {
+        const cId = key.slice("campaign:".length);
+        name = wsCampaigns.find((c) => c.id === cId)?.name ?? "Unassigned";
+      } else if (key.startsWith("bucket:")) {
+        const bucketId = key.slice("bucket:".length);
+        name = BUCKET_LABELS[bucketId] ?? "Unassigned";
+      } else {
+        name = "Unassigned";
+      }
+
+      const budget  = kws.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+      const leads   = kws.reduce((s, k) => s + k.estimatedLeads, 0);
+      const revenue = kws.reduce((s, k) => s + k.revenuePotential, 0);
+      rows.push({
+        name,
+        budget,
+        pctTotal: totalBudget > 0 ? Math.round((budget / totalBudget) * 100) : 0,
+        kwCount:  kws.length,
+        leads,
+        cpa:      leads > 0 ? Math.round(budget / leads) : 0,
+        revenue,
+        roas:     budget > 0 ? +(revenue / budget).toFixed(2) : 0,
+      });
+    }
+    return rows.sort((a, b) => b.budget - a.budget);
+  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa]);
+
+  // Base keywords (no active-scenario CPC adjustment) for clean scenario comparison
+  const baseInScopeKws = useMemo(() => {
+    const ws = buildWorkspaceKeywords(KEYWORDS as never, wsSysOvr, wsLibKws, 1.0, wsCampaigns, wsAdGroups);
+    const targetSet = new Set(effectiveAssumptions.targetCountries);
+    return ws
+      .filter((kw) => targetSet.has(kw.country) && kw.effectiveAction !== "No")
+      .map((kw) => ({ ...kw, action: kw.effectiveAction })) as never[];
+  }, [wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries]);
+
+  const baseBudgetMap = useMemo(
+    () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget),
+    [baseInScopeKws, assumptions.monthlyBudget],
+  );
+
+  // 3-scenario outlook: Conservative / Balanced / Aggressive
+  const scenarioOutlook = useMemo<ScenarioForecast[]>(() => {
+    if (baseInScopeKws.length === 0) return [];
+    const mods = buildMatchTypeModifiers(fa);
+    return SCENARIO_SPECS.map((spec) =>
+      computeScenarioForecast(baseInScopeKws as never, baseBudgetMap, assumptions, spec, mods),
+    );
+  }, [baseInScopeKws, baseBudgetMap, assumptions, fa]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -300,7 +381,8 @@ export default function ForecastPage() {
           <Info size={15} className="text-slate-400 mt-0.5 shrink-0" />
           <p className="text-xs text-slate-500 leading-relaxed">
             <span className="font-semibold">No keyword data yet for:</span>{" "}
-            {missingCountries.join(", ")}. Keyword research is currently available for Singapore, Malaysia, Vietnam, and Thailand.
+            {missingCountries.join(", ")}. Generate keywords for these countries from the{" "}
+            <Link href="/keywords" className="underline font-semibold hover:text-slate-700">Keywords page →</Link>
           </p>
         </div>
       )}
@@ -353,7 +435,8 @@ export default function ForecastPage() {
         <p className="text-xs text-blue-600 leading-relaxed">
           <span className="font-semibold">Forecast estimates only.</span>{" "}
           Budget is allocated proportionally by Opportunity Score (85% Buy / 15% Test).
-          Clicks = budget ÷ suggested CPC · Leads = clicks × LP CVR · SQL = leads × 50% · Deals = leads × close rate · Revenue = deals × avg deal size.
+          Estimates are adjusted to reflect real-world inefficiencies in traffic quality, competition, and landing page performance — including a B2B CPL floor of $25.
+          Clicks = budget ÷ effective CPC · Leads = clicks × blended CVR (intent + match type + country + LP realism) · SQL = leads × SQL rate · Deals = leads × close rate · Revenue = deals × avg deal size.
           Actual results depend on ad quality, landing page performance, and market conditions.
         </p>
       </div>
@@ -369,87 +452,111 @@ export default function ForecastPage() {
         <KpiCard label="Proj. Revenue" value={totals.revenue > 0 ? `$${totals.revenue.toLocaleString()}` : "—"} sub={`${roi}× budget ROI`} />
       </div>
 
-      {/* Scenario comparison table */}
-      {scenarioComparison.length >= 2 && (
-        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100">
-            <h3 className="text-sm font-semibold text-slate-800">Scenario Comparison</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Side-by-side projection across all scenarios — based on your project&apos;s base assumptions.
-            </p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Scenario</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Budget</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Leads</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">CPL</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Revenue</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Budget ×</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">CVR ×</th>
-                  <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">CPC ×</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scenarioComparison.map((row, i) => {
-                  const isActive = row.scenario.id === scenario?.id;
-                  return (
-                    <tr
-                      key={row.scenario.id}
-                      className={`border-t border-slate-50 transition-colors ${
-                        isActive ? "bg-brand-50/60" : i % 2 !== 0 ? "bg-slate-50/30" : ""
-                      }`}
-                    >
-                      <td className="px-5 py-3.5 whitespace-nowrap">
-                        <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                          {row.scenario.name}
-                          {isActive && (
-                            <span className="rounded-full bg-brand-100 text-brand-700 text-[10px] font-bold px-2 py-0.5">Active</span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums text-slate-700 whitespace-nowrap font-medium">
-                        ${row.budget.toLocaleString()}
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums whitespace-nowrap">
-                        <span className="font-semibold text-emerald-600">{row.leads}</span>
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums text-slate-700 whitespace-nowrap">
-                        {row.cpl > 0 ? `$${row.cpl.toLocaleString()}` : "—"}
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums whitespace-nowrap">
-                        <span className="font-semibold text-brand-600">
-                          {row.revenue > 0 ? `$${row.revenue.toLocaleString()}` : "—"}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums text-slate-500 whitespace-nowrap text-xs">
-                        ×{row.scenario.budgetMultiplier.toFixed(2)}
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums text-slate-500 whitespace-nowrap text-xs">
-                        ×{row.scenario.cvrMultiplier.toFixed(2)}
-                      </td>
-                      <td className="px-5 py-3.5 tabular-nums text-slate-500 whitespace-nowrap text-xs">
-                        ×{row.scenario.cpcMultiplier.toFixed(2)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="px-5 py-3 border-t border-slate-100">
-            <p className="text-xs text-slate-400">
-              Switch scenarios using the ⚗ selector in the header. Manage scenarios from the{" "}
-              {activeProject
-                ? <Link href={`/projects/${activeProject.id}/scenarios`} className="text-brand-500 hover:text-brand-700 font-semibold">scenarios page →</Link>
-                : "project settings."
-              }
-            </p>
-          </div>
+      {/* Zero-budget diagnostic */}
+      {zeroBudgetDiagnosis && (
+        <div className="flex items-start gap-2.5 bg-red-50 border border-red-100 rounded-xl px-4 py-3">
+          <Info size={15} className="text-red-400 mt-0.5 shrink-0" />
+          <p className="text-xs text-red-700 leading-relaxed">
+            <span className="font-semibold">Forecast shows $0 — </span>
+            {zeroBudgetDiagnosis.msg}{" "}
+            <Link href={zeroBudgetDiagnosis.href} className="underline font-semibold hover:text-red-900">
+              {zeroBudgetDiagnosis.fix} →
+            </Link>
+          </p>
         </div>
       )}
+
+      {/* Scenario Outlook — Conservative / Balanced / Aggressive */}
+      {scenarioOutlook.length > 0 && (() => {
+        const TONE_STYLES = {
+          red:     { row: "bg-red-50/30",     name: "text-red-700",      badge: "bg-red-50 text-red-600 border-red-200",         leads: "text-red-600",      revenue: "text-red-700"     },
+          neutral: { row: "",                  name: "text-slate-800",    badge: "bg-slate-100 text-slate-600 border-slate-200",  leads: "text-slate-700",    revenue: "text-slate-800"   },
+          green:   { row: "bg-emerald-50/30",  name: "text-emerald-800",  badge: "bg-emerald-50 text-emerald-700 border-emerald-200", leads: "text-emerald-700", revenue: "text-emerald-800" },
+        };
+        const balanced = scenarioOutlook.find((r) => r.spec.id === "balanced");
+        return (
+          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100">
+              <h3 className="text-sm font-semibold text-slate-800">Scenario Outlook</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Best-case, expected, and worst-case projections — same budget, same keywords. Differences reflect realistic CTR, CVR, CPC, and impression share variations.
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100">
+                    <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Scenario</th>
+                    <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Leads</th>
+                    <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">CPL</th>
+                    <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">Revenue</th>
+                    <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">ROAS</th>
+                    <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 hidden lg:table-cell">Interpretation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scenarioOutlook.map((row) => {
+                    const tc = TONE_STYLES[row.spec.tone];
+                    const vsBalanced = balanced && balanced.leads > 0
+                      ? Math.round(((row.leads - balanced.leads) / balanced.leads) * 100)
+                      : null;
+                    return (
+                      <tr key={row.spec.id} className={`border-t border-slate-100 transition-colors ${tc.row}`}>
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm font-bold ${tc.name}`}>{row.spec.name}</span>
+                              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tc.badge}`}>
+                                {row.spec.case}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] text-slate-400 tabular-nums">
+                              <span title="CTR multiplier">CTR ×{row.spec.ctrMultiplier.toFixed(2)}</span>
+                              <span title="CVR multiplier">CVR ×{row.spec.cvrMultiplier.toFixed(2)}</span>
+                              <span title="CPC multiplier">CPC ×{row.spec.cpcMultiplier.toFixed(2)}</span>
+                              <span title="Impression share multiplier">IS ×{row.spec.impShareMultiplier.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-right tabular-nums whitespace-nowrap">
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={`text-base font-bold ${tc.leads}`}>{row.leads.toLocaleString()}</span>
+                            {vsBalanced !== null && row.spec.id !== "balanced" && (
+                              <span className={`text-[10px] font-medium ${vsBalanced >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                {vsBalanced >= 0 ? "+" : ""}{vsBalanced}% vs balanced
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-right tabular-nums text-slate-700 whitespace-nowrap font-medium">
+                          {row.cpl > 0 ? `$${row.cpl.toLocaleString()}` : "—"}
+                        </td>
+                        <td className="px-5 py-4 text-right tabular-nums whitespace-nowrap">
+                          <span className={`font-bold ${tc.revenue}`}>
+                            {row.revenue > 0 ? `$${row.revenue.toLocaleString()}` : "—"}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 text-right tabular-nums whitespace-nowrap font-medium text-slate-700">
+                          {row.roas > 0 ? `${row.roas}×` : "—"}
+                        </td>
+                        <td className="px-5 py-4 text-slate-400 italic text-xs hidden lg:table-cell">
+                          {row.spec.description}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/50">
+              <p className="text-xs text-slate-400">
+                Budget fixed at <span className="font-medium text-slate-600">${assumptions.monthlyBudget.toLocaleString()}/mo</span> across all scenarios.
+                Aggressive assumes optimised Quality Score and strong landing page performance. Conservative reflects crowded auctions and lower intent traffic.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Charts 2 × 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -596,6 +703,113 @@ export default function ForecastPage() {
           </span>
         </div>
       </div>
+
+      {/* Campaign Summary */}
+      {campaignSummary.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Campaign Summary</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Workspace keywords grouped by campaign · Budget, leads, and ROAS rolled up per campaign
+              </p>
+            </div>
+            <button
+              onClick={() => exportCampaignSummaryCsv(campaignSummary, assumptions.projectName, scenario?.name ?? "Balanced")}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
+            >
+              <Download size={12} /> Export CSV
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  {["Campaign", "Budget", "% of Total", "Keywords", "Conversions", "CPA", "Revenue", "ROAS"].map((col) => (
+                    <th key={col} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {campaignSummary.map((row, i) => {
+                  const camp      = wsCampaigns.find((c) => c.name === row.name);
+                  const typeStyle = camp?.campaignType ? CAMPAIGN_TYPE_STYLES[camp.campaignType] : null;
+                  const typeLabel = camp?.campaignType ? CAMPAIGN_TYPE_LABELS[camp.campaignType] : null;
+                  return (
+                    <tr key={row.name} className={`border-t border-slate-50 hover:bg-slate-50/80 transition-colors ${i % 2 !== 0 ? "bg-slate-50/30" : ""}`}>
+                      <td className="px-5 py-3.5 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-800">{row.name}</span>
+                          {typeLabel && typeStyle && (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${typeStyle.badge}`}>
+                              {typeLabel}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 tabular-nums font-medium text-slate-700 whitespace-nowrap">${row.budget.toLocaleString()}</td>
+                      <td className="px-5 py-3.5 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${row.pctTotal}%` }} />
+                          </div>
+                          <span className="text-xs tabular-nums text-slate-500">{row.pctTotal}%</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 tabular-nums text-slate-600 whitespace-nowrap">{row.kwCount}</td>
+                      <td className="px-5 py-3.5 tabular-nums whitespace-nowrap">
+                        <span className="font-semibold text-emerald-600">{row.leads}</span>
+                      </td>
+                      <td className="px-5 py-3.5 tabular-nums text-slate-700 whitespace-nowrap">
+                        {row.cpa > 0 ? `$${row.cpa.toLocaleString()}` : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-5 py-3.5 tabular-nums whitespace-nowrap">
+                        {row.revenue > 0
+                          ? <span className="font-semibold text-brand-600">${row.revenue.toLocaleString()}</span>
+                          : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-5 py-3.5 tabular-nums whitespace-nowrap">
+                        {row.roas > 0
+                          ? <span className="font-semibold text-violet-600">{row.roas.toFixed(1)}×</span>
+                          : <span className="text-slate-300">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr className="border-t-2 border-slate-200 bg-slate-50">
+                  <td className="px-5 py-3.5 text-xs font-bold uppercase tracking-wider text-slate-500">Total</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-slate-800">
+                    ${campaignSummary.reduce((s, r) => s + r.budget, 0).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3.5 text-xs text-slate-400">100%</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-slate-800">
+                    {campaignSummary.reduce((s, r) => s + r.kwCount, 0)}
+                  </td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-emerald-600">
+                    {campaignSummary.reduce((s, r) => s + r.leads, 0)}
+                  </td>
+                  <td className="px-5 py-3.5 text-xs text-slate-400">—</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-brand-600">
+                    ${campaignSummary.reduce((s, r) => s + r.revenue, 0).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3.5 text-xs">
+                    {(() => {
+                      const b = campaignSummary.reduce((s, r) => s + r.budget, 0);
+                      const v = campaignSummary.reduce((s, r) => s + r.revenue, 0);
+                      return b > 0 ? <span className="font-bold text-violet-600">{(v / b).toFixed(1)}×</span> : <span className="text-slate-400">—</span>;
+                    })()}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="px-5 py-3 border-t border-slate-100">
+            <p className="text-xs text-slate-400">
+              Budgets are allocated proportionally by Opportunity Score. ROAS = projected revenue ÷ allocated budget.
+            </p>
+          </div>
+        </div>
+      )}
 
     </div>
   );

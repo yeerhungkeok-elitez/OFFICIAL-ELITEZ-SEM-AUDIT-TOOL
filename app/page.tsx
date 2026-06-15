@@ -535,6 +535,7 @@ export default function DashboardPage() {
                       leads: c.leads,
                       cpa: c.cpa,
                       revenue: c.revenue,
+                      roas: c.budget > 0 ? +(c.revenue / c.budget).toFixed(2) : 0,
                     })),
                     ...(unassignedStats.kwCount > 0 ? [{
                       name: "Unassigned",
@@ -544,6 +545,7 @@ export default function DashboardPage() {
                       leads: unassignedStats.leads,
                       cpa: unassignedStats.cpa,
                       revenue: unassignedStats.revenue,
+                      roas: unassignedStats.budget > 0 ? +(unassignedStats.revenue / unassignedStats.budget).toFixed(2) : 0,
                     }] : []),
                   ];
                   exportCampaignSummaryCsv(rows, assumptions.projectName, activeScenario?.name ?? "Balanced");
