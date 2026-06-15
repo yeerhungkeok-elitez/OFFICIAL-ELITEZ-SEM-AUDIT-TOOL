@@ -27,6 +27,7 @@ import {
   ensureDefaultScenarios,
   type Scenario,
 } from "@/lib/scenarioStore";
+import { loadBlendedCvrMap } from "@/lib/historicalCalibration";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,8 +43,12 @@ interface AppContextValue {
   setActiveScenario: (id: string) => void;
 
   // Refresh helpers — call after external mutations (create/edit/delete)
-  refreshProjects:  () => void;
-  refreshScenarios: () => void;
+  refreshProjects:    () => void;
+  refreshScenarios:   () => void;
+  refreshCalibration: () => void;
+
+  // Calibration — blended CVR map loaded from Supabase for the active project
+  calibratedCvr: Record<string, number> | null;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -63,6 +68,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeProject,  setActiveProjectState]  = useState<Project | null>(null);
   const [scenarios,      setScenarios]           = useState<Scenario[]>([]);
   const [activeScenario, setActiveScenarioState] = useState<Scenario | null>(null);
+  const [calibratedCvr,  setCalibratedCvr]       = useState<Record<string, number> | null>(null);
 
   // ─── Internal: load scenarios for a project ───────────────────────────────
 
@@ -82,6 +88,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveProjectState(proj);
     if (proj) loadScenarios(proj.id);
   }, [loadScenarios]);
+
+  // ─── Calibration: reload blended CVR map when active project changes ─────
+
+  useEffect(() => {
+    if (!activeProject) { setCalibratedCvr(null); return; }
+    loadBlendedCvrMap(activeProject.id).then(setCalibratedCvr);
+  }, [activeProject?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Public mutators ──────────────────────────────────────────────────────
 
@@ -127,6 +140,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveScenarioState(match);
   }, [activeProject]);
 
+  const refreshCalibration = useCallback(() => {
+    if (!activeProject) return;
+    loadBlendedCvrMap(activeProject.id).then(setCalibratedCvr);
+  }, [activeProject]);
+
   // ─── Render ───────────────────────────────────────────────────────────────
 
   const value: AppContextValue = {
@@ -138,6 +156,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveScenario,
     refreshProjects,
     refreshScenarios,
+    refreshCalibration,
+    calibratedCvr,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

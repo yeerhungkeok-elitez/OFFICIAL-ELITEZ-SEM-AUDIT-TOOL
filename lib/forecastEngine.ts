@@ -8,6 +8,7 @@
 import type { ProjectAssumptions } from "@/lib/projectStore";
 import type { Keyword, EnrichedKeyword, CountryForecast, PriorityLevel, MatchType, Intent } from "@/lib/keywordEngine";
 import { SQL_RATE } from "@/lib/keywordEngine";
+import { toPerfCategory } from "@/lib/historicalCalibration";
 
 // ─── Enrich options ───────────────────────────────────────────────────────────
 
@@ -20,6 +21,9 @@ export interface EnrichOpts {
   ctrMultiplier?: number;
   cvrMultiplier?: number;
   impShareMultiplier?: number;
+  // Data-anchored CVR per perf category (brand/service/competitor/other).
+  // When present, overrides the hardcoded category priors in computeEffectiveCvr.
+  calibratedCvrByCategory?: Record<string, number>;
 }
 
 export type ConfidenceLevel = "High" | "Medium" | "Low";
@@ -180,8 +184,27 @@ export function computeEffectiveCvr(
   kw: Keyword,
   lpConversionRate: number,
   matchMod: { cvrFactor: number },
+  calibratedCvrByCategory?: Record<string, number>,
 ): number {
   const category  = getCategory(kw);
+
+  // ── Calibration override ──────────────────────────────────────────────────
+  // If the project has historical actuals (passed in as a blended CVR map keyed
+  // by perf category), use the data-anchored value as the starting point instead
+  // of the hardcoded prior. This is what corrects the brand-vs-service inversion.
+  // The map already blends actuals with priors by confidence, so it is NOT
+  // re-clamped to the static benchmark range (which encodes the wrong priors).
+  if (calibratedCvrByCategory) {
+    const perfCat = toPerfCategory(category, kw.intent);
+    const blended = calibratedCvrByCategory[perfCat];
+    if (blended != null && blended > 0) {
+      const lpScale = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
+      const raw     = blended * lpScale * matchMod.cvrFactor;
+      return Math.max(0.002, Math.min(0.30, raw));
+    }
+  }
+
+  // ── Prior-based fallback (no calibration data) ────────────────────────────
   const midpoint  = CVR_MIDPOINT[category] ?? CVR_MIDPOINT_BY_INTENT[kw.intent] ?? 0.03;
   const lpScale   = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
   const range     = getCvrRange(kw);
@@ -273,7 +296,7 @@ export function enrichKeyword(
   const rawClicks = kw.action === "No" || budget === 0 ? 0 : Math.min(impClicks, maxClicks);
 
   // ── Step 6: Intent-based CVR (float) ─────────────────────────────────────
-  const baseCvr      = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod);
+  const baseCvr      = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, opts?.calibratedCvrByCategory);
   const effectiveCvr = Math.max(0.005, Math.min(baseCvr * cvrMult, 0.30));
 
   // ── Step 7: Raw leads (float) ─────────────────────────────────────────────
@@ -470,13 +493,15 @@ export function computeScenarioForecast(
   assumptions: ProjectAssumptions,
   spec: ScenarioSpec,
   matchMods?: Record<MatchType, { cpcFactor: number; cvrFactor: number; label?: string }>,
+  calibratedCvrByCategory?: Record<string, number>,
 ): ScenarioForecast {
   const enriched = enrich(inScope, budgetMap, assumptions, {
-    matchMods:          matchMods ?? MATCH_TYPE_MODIFIERS,
-    cpcMultiplier:      spec.cpcMultiplier,
-    ctrMultiplier:      spec.ctrMultiplier,
-    cvrMultiplier:      spec.cvrMultiplier,
-    impShareMultiplier: spec.impShareMultiplier,
+    matchMods:               matchMods ?? MATCH_TYPE_MODIFIERS,
+    cpcMultiplier:           spec.cpcMultiplier,
+    ctrMultiplier:           spec.ctrMultiplier,
+    cvrMultiplier:           spec.cvrMultiplier,
+    impShareMultiplier:      spec.impShareMultiplier,
+    calibratedCvrByCategory,
   });
 
   const budget  = enriched.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);

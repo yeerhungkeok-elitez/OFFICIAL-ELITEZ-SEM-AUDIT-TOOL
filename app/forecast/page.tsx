@@ -123,7 +123,7 @@ function SplitBar({ buyBudget, testBudget }: { buyBudget: number; testBudget: nu
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ForecastPage() {
-  const { activeProject, activeScenario } = useAppContext();
+  const { activeProject, activeScenario, calibratedCvr, refreshCalibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
   const assumptions: ProjectAssumptions = useMemo(
@@ -196,12 +196,12 @@ export default function ForecastPage() {
   );
 
   const rawTotals = useMemo(() => {
-    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions);
+    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, { calibratedCvrByCategory: calibratedCvr ?? undefined });
     return {
       totalLeads:   enriched.reduce((s, k) => s + k.estimatedLeads,    0),
       totalRevenue: enriched.reduce((s, k) => s + k.revenuePotential,  0),
     };
-  }, [inScopeKws, budgetMap, effectiveAssumptions]);
+  }, [inScopeKws, budgetMap, effectiveAssumptions, calibratedCvr]);
 
   const countryForecasts = useMemo(
     () => buildCountryForecasts(
@@ -272,10 +272,11 @@ export default function ForecastPage() {
 
     const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget);
     const enriched = enrich(inScope as never, bMap, effectiveAssumptions, {
-      matchMods:             buildMatchTypeModifiers(fa),
-      brandCvrUplift:        fa.brandCvrUplift,
-      competitorCvrDiscount: fa.competitorCvrDiscount,
-      cpcMultiplier:         fa.cpcMultiplier,
+      matchMods:               buildMatchTypeModifiers(fa),
+      brandCvrUplift:          fa.brandCvrUplift,
+      competitorCvrDiscount:   fa.competitorCvrDiscount,
+      cpcMultiplier:           fa.cpcMultiplier,
+      calibratedCvrByCategory: calibratedCvr ?? undefined,
     });
 
     const totalBudget = enriched.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
@@ -318,7 +319,7 @@ export default function ForecastPage() {
       });
     }
     return rows.sort((a, b) => b.budget - a.budget);
-  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa]);
+  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa, calibratedCvr]);
 
   // Base keywords (no active-scenario CPC adjustment) for clean scenario comparison
   const baseInScopeKws = useMemo(() => {
@@ -339,9 +340,38 @@ export default function ForecastPage() {
     if (baseInScopeKws.length === 0) return [];
     const mods = buildMatchTypeModifiers(fa);
     return SCENARIO_SPECS.map((spec) =>
-      computeScenarioForecast(baseInScopeKws as never, baseBudgetMap, assumptions, spec, mods),
+      computeScenarioForecast(baseInScopeKws as never, baseBudgetMap, assumptions, spec, mods, calibratedCvr ?? undefined),
     );
-  }, [baseInScopeKws, baseBudgetMap, assumptions, fa]);
+  }, [baseInScopeKws, baseBudgetMap, assumptions, fa, calibratedCvr]);
+
+  // ─── Calibration upload state ────────────────────────────────────────────────
+  const [calibFile,   setCalibFile]   = useState<File | null>(null);
+  const [calibUpload, setCalibUpload] = useState<{
+    status: "idle" | "uploading" | "done" | "error";
+    message?: string;
+    benchmarks?: { category: string; actualCvr: number; blendedCvr: number; clicks: number; confidence: number }[];
+  }>({ status: "idle" });
+
+  async function handleCalibrationUpload() {
+    if (!calibFile || !activeProject) return;
+    setCalibUpload({ status: "uploading" });
+    const form = new FormData();
+    form.append("file", calibFile);
+    form.append("projectId", activeProject.id);
+    try {
+      const res  = await fetch("/api/calibration/upload", { method: "POST", body: form });
+      const json = await res.json();
+      if (!res.ok) {
+        setCalibUpload({ status: "error", message: json.error ?? "Upload failed." });
+      } else {
+        setCalibUpload({ status: "done", benchmarks: json.benchmarks, message: `${json.rowsIngested} rows ingested from ${json.snapshotDate}.` });
+        refreshCalibration();
+        setCalibFile(null);
+      }
+    } catch (e) {
+      setCalibUpload({ status: "error", message: e instanceof Error ? e.message : "Unknown error." });
+    }
+  }
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -384,6 +414,77 @@ export default function ForecastPage() {
             {missingCountries.join(", ")}. Generate keywords for these countries from the{" "}
             <Link href="/keywords" className="underline font-semibold hover:text-slate-700">Keywords page →</Link>
           </p>
+        </div>
+      )}
+
+      {/* Calibration upload */}
+      {isProjectSet && (
+        <div className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Performance Data Calibration</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Upload a Google Ads "Search keyword" export to anchor CVR forecasts to your actual conversion data.
+              {calibratedCvr && (
+                <span className="ml-1 text-emerald-600 font-medium">✓ Calibration active</span>
+              )}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:border-brand-400 hover:text-brand-600 transition-colors">
+              <Download size={12} />
+              {calibFile ? calibFile.name : "Choose CSV file"}
+              <input
+                type="file"
+                accept=".csv"
+                className="sr-only"
+                onChange={(e) => {
+                  setCalibFile(e.target.files?.[0] ?? null);
+                  setCalibUpload({ status: "idle" });
+                }}
+              />
+            </label>
+            <button
+              onClick={handleCalibrationUpload}
+              disabled={!calibFile || calibUpload.status === "uploading"}
+              className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-xs font-semibold disabled:opacity-40 hover:bg-brand-600 transition-colors"
+            >
+              {calibUpload.status === "uploading" ? "Uploading…" : "Upload"}
+            </button>
+            {calibUpload.status === "error" && (
+              <span className="text-xs text-red-600">{calibUpload.message}</span>
+            )}
+            {calibUpload.status === "done" && (
+              <span className="text-xs text-emerald-600 font-medium">{calibUpload.message}</span>
+            )}
+          </div>
+
+          {calibUpload.status === "done" && calibUpload.benchmarks && calibUpload.benchmarks.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="text-left py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Category</th>
+                    <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Actual CVR</th>
+                    <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Blended CVR</th>
+                    <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Clicks</th>
+                    <th className="text-right py-1.5 font-semibold text-slate-500 uppercase tracking-wider">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calibUpload.benchmarks.map((b) => (
+                    <tr key={b.category} className="border-b border-slate-50">
+                      <td className="py-1.5 pr-4 font-medium text-slate-700 capitalize">{b.category}</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{b.actualCvr}%</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{b.blendedCvr}%</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-500">{b.clicks.toLocaleString()}</td>
+                      <td className="py-1.5 text-right tabular-nums text-slate-500">{Math.round(b.confidence * 100)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

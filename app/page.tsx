@@ -157,7 +157,7 @@ function WarningCard({ w }: { w: PlanningWarning }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { activeProject, activeScenario } = useAppContext();
+  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
 
   const [fa, setFa] = useState<ForecastAssumptions>(DEFAULT_FORECAST_ASSUMPTIONS);
   useEffect(() => {
@@ -230,12 +230,13 @@ export default function DashboardPage() {
 
   const enrichedForecast = useMemo(
     () => enrich(forecastReadyKws as unknown as Keyword[], budgetMap, assumptions, {
-      matchMods:             buildMatchTypeModifiers(fa),
-      brandCvrUplift:        fa.brandCvrUplift,
-      competitorCvrDiscount: fa.competitorCvrDiscount,
-      cpcMultiplier:         fa.cpcMultiplier,
+      matchMods:               buildMatchTypeModifiers(fa),
+      brandCvrUplift:          fa.brandCvrUplift,
+      competitorCvrDiscount:   fa.competitorCvrDiscount,
+      cpcMultiplier:           fa.cpcMultiplier,
+      calibratedCvrByCategory: calibratedCvr ?? undefined,
     }),
-    [forecastReadyKws, budgetMap, assumptions, fa],
+    [forecastReadyKws, budgetMap, assumptions, fa, calibratedCvr],
   );
 
   // ─── KPI totals ───────────────────────────────────────────────────────────

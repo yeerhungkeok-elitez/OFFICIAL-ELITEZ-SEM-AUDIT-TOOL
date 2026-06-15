@@ -3253,7 +3253,7 @@ function BucketSection({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function KeywordsPage() {
-  const { activeProject, activeScenario } = useAppContext();
+  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
 
@@ -3411,12 +3411,13 @@ export default function KeywordsPage() {
   // 5. Enriched forecast data
   const enrichedForecast = useMemo(
     () => enrich(forecastReadyKws, budgetMap, effectiveAssumptions, {
-      matchMods:             buildMatchTypeModifiers(fa),
-      brandCvrUplift:        fa.brandCvrUplift,
-      competitorCvrDiscount: fa.competitorCvrDiscount,
-      cpcMultiplier:         fa.cpcMultiplier,
+      matchMods:               buildMatchTypeModifiers(fa),
+      brandCvrUplift:          fa.brandCvrUplift,
+      competitorCvrDiscount:   fa.competitorCvrDiscount,
+      cpcMultiplier:           fa.cpcMultiplier,
+      calibratedCvrByCategory: calibratedCvr ?? undefined,
     }),
-    [forecastReadyKws, budgetMap, effectiveAssumptions, fa]
+    [forecastReadyKws, budgetMap, effectiveAssumptions, fa, calibratedCvr]
   );
 
   // 6. Merge forecast + relevance back onto country-filtered workspace keywords

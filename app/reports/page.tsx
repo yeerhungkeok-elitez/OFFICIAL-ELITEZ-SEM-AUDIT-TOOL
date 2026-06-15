@@ -149,7 +149,7 @@ function Badge({ label, className }: { label: string; className: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
-  const { activeProject, activeScenario } = useAppContext();
+  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
   const assumptions: ProjectAssumptions = useMemo(
@@ -199,12 +199,13 @@ export default function ReportsPage() {
 
   const enrichedKws = useMemo(
     () => inScopeKws.filter((k) => k.action !== "No").map((k) => enrichKeyword(k, budgetMap, effectiveAssumptions, {
-      matchMods:             buildMatchTypeModifiers(fa),
-      brandCvrUplift:        fa.brandCvrUplift,
-      competitorCvrDiscount: fa.competitorCvrDiscount,
-      cpcMultiplier:         fa.cpcMultiplier,
+      matchMods:               buildMatchTypeModifiers(fa),
+      brandCvrUplift:          fa.brandCvrUplift,
+      competitorCvrDiscount:   fa.competitorCvrDiscount,
+      cpcMultiplier:           fa.cpcMultiplier,
+      calibratedCvrByCategory: calibratedCvr ?? undefined,
     })),
-    [inScopeKws, budgetMap, effectiveAssumptions, fa]
+    [inScopeKws, budgetMap, effectiveAssumptions, fa, calibratedCvr]
   );
 
   // Raw totals (first pass for priority scoring)
