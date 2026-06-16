@@ -33,7 +33,8 @@ export async function loadHistoricalKeywords(projectId: string): Promise<Workspa
   const { data, error } = await supabase
     .from("semaudit_historical_keyword_performance")
     .select("keyword, match_type, category, country, clicks, impressions, cost, conversions, snapshot_date")
-    .eq("project_id", projectId);
+    .eq("project_id", projectId)
+    .gt("impressions", 0);
 
   if (error || !data) return [];
 

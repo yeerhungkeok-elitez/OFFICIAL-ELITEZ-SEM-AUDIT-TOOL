@@ -23,17 +23,19 @@
 export type PerfCategory = "brand" | "generic" | "highIntent" | "competitor";
 
 export interface ParsedPerfRow {
-  keyword:     string;
-  category:    PerfCategory;
-  campaign:    string;
-  adGroup:     string;
-  matchType:   string;
-  clicks:      number;   // "Interactions" in the new export, "Clicks" in the old
-  impressions: number;
-  cost:        number;
-  conversions: number;
-  avgCpc:      number;   // "Avg. cost" — actual per-click cost for this row
-  currency:    string;   // "Currency code", e.g. "MYR"
+  keyword:       string;
+  category:      PerfCategory;
+  campaign:      string;
+  adGroup:       string;
+  matchType:     string;
+  keywordStatus: string;  // "Keyword status" col: Enabled / Paused / Removed
+  status:        string;  // "Status" col: Eligible / Not eligible / Paused
+  clicks:        number;  // "Interactions" in the new export, "Clicks" in the old
+  impressions:   number;
+  cost:          number;
+  conversions:   number;
+  avgCpc:        number;  // "Avg. cost" — actual per-click cost for this row
+  currency:      string;  // "Currency code", e.g. "MYR"
 }
 
 export interface ParseResult {
@@ -124,16 +126,18 @@ export function parseGoogleAdsCsv(buf: ArrayBuffer): ParseResult {
   };
 
   const idx = {
-    keyword:     pick("Keyword", "Search keyword"),
-    matchType:   pick("Match type", "Search keyword match type"),
-    campaign:    pick("Campaign"),
-    adGroup:     pick("Ad group"),
-    clicks:      pick("Interactions", "Clicks"), // Interactions is the new clicks column
-    impressions: pick("Impr."),
-    cost:        pick("Cost"),
-    conversions: pick("Conversions"),
-    avgCpc:      pick("Avg. cost"),
-    currency:    pick("Currency code"),
+    keywordStatus: 0,                            // always first column in new layout
+    keyword:       pick("Keyword", "Search keyword"),
+    matchType:     pick("Match type", "Search keyword match type"),
+    campaign:      pick("Campaign"),
+    adGroup:       pick("Ad group"),
+    status:        pick("Status"),
+    clicks:        pick("Interactions", "Clicks"), // Interactions is the new clicks column
+    impressions:   pick("Impr."),
+    cost:          pick("Cost"),
+    conversions:   pick("Conversions"),
+    avgCpc:        pick("Avg. cost"),
+    currency:      pick("Currency code"),
   };
 
   const rows: ParsedPerfRow[] = [];
@@ -156,16 +160,18 @@ export function parseGoogleAdsCsv(buf: ArrayBuffer): ParseResult {
 
     rows.push({
       keyword,
-      category:    categorize(campaign, adGroup),
+      category:      categorize(campaign, adGroup),
       campaign,
       adGroup,
-      matchType:   (c[idx.matchType] ?? "").trim(),
-      clicks:      num(c[idx.clicks]),
-      impressions: num(c[idx.impressions]),
-      cost:        num(c[idx.cost]),
-      conversions: num(c[idx.conversions]),
-      avgCpc:      idx.avgCpc   !== -1 ? num(c[idx.avgCpc]) : 0,
-      currency:    idx.currency !== -1 ? (c[idx.currency] ?? "").trim() : "",
+      matchType:     (c[idx.matchType] ?? "").trim(),
+      keywordStatus: statusCell,
+      status:        idx.status !== -1 ? (c[idx.status] ?? "").trim() : "",
+      clicks:        num(c[idx.clicks]),
+      impressions:   num(c[idx.impressions]),
+      cost:          num(c[idx.cost]),
+      conversions:   num(c[idx.conversions]),
+      avgCpc:        idx.avgCpc   !== -1 ? num(c[idx.avgCpc]) : 0,
+      currency:      idx.currency !== -1 ? (c[idx.currency] ?? "").trim() : "",
     });
   }
 

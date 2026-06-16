@@ -48,20 +48,22 @@ export async function POST(req: NextRequest) {
     // Upsert raw rows. onConflict matches the table's unique constraint so a
     // re-uploaded export overwrites duplicates instead of stacking them.
     const records = rows.map((r) => ({
-      project_id:    projectId,
-      snapshot_date: snapshotDate,
-      source:        "csv",
-      keyword:       r.keyword,
-      category:      r.category,
-      campaign:      r.campaign,
-      ad_group:      r.adGroup,
-      match_type:    r.matchType,
-      clicks:        r.clicks,
-      impressions:   r.impressions,
-      cost:          r.cost,
-      conversions:   r.conversions,
-      avg_cpc:       r.avgCpc,
-      currency:      r.currency,
+      project_id:     projectId,
+      snapshot_date:  snapshotDate,
+      source:         "csv",
+      keyword:        r.keyword,
+      category:       r.category,
+      campaign:       r.campaign,
+      ad_group:       r.adGroup,
+      match_type:     r.matchType,
+      keyword_status: r.keywordStatus,
+      status:         r.status,
+      clicks:         r.clicks,
+      impressions:    r.impressions,
+      cost:           r.cost,
+      conversions:    r.conversions,
+      avg_cpc:        r.avgCpc,
+      currency:       r.currency,
     }));
 
     // Deduplicate within the batch — Postgres rejects ON CONFLICT DO UPDATE when
