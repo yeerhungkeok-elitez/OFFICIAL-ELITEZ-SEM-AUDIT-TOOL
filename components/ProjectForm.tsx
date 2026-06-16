@@ -95,6 +95,7 @@ interface FormState {
   offerType:      string;
   targetAudience: string;
   geoFocus:       string;
+  keywordSource:  "hardcoded" | "historical";
 }
 
 function toFormState(p?: Partial<Project>): FormState {
@@ -114,6 +115,7 @@ function toFormState(p?: Partial<Project>): FormState {
     offerType:        p?.offerType        ?? "",
     targetAudience:   p?.targetAudience   ?? "",
     geoFocus:         p?.geoFocus         ?? "",
+    keywordSource:    p?.keywordSource    ?? "hardcoded",
   };
 }
 
@@ -285,6 +287,7 @@ export default function ProjectForm({
       offerType:        form.offerType,
       targetAudience:   form.targetAudience,
       geoFocus:         form.geoFocus,
+      keywordSource:    form.keywordSource,
     };
 
     onSubmit(draft);
@@ -310,6 +313,36 @@ export default function ProjectForm({
             {saved ? "✓ Saved!" : submitLabel}
           </button>
         </div>
+
+        {/* Section 0 — Keyword Source */}
+        <SectionCard title="Keyword Source">
+          <FullWidth>
+            <Label>Keyword Source</Label>
+            <div className="flex gap-2">
+              {(["hardcoded", "historical"] as const).map((src) => {
+                const label  = src === "hardcoded" ? "Estimate Data" : "Actual Data";
+                const active = form.keywordSource === src;
+                return (
+                  <button
+                    key={src}
+                    type="button"
+                    onClick={() => set("keywordSource")(src)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                      active
+                        ? "bg-brand-500 border-brand-500 text-white"
+                        : "bg-white border-slate-200 text-slate-600 hover:border-brand-500 hover:text-brand-500"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mt-2">
+              Actual Data pulls keywords from your uploaded Google Ads CSV data in Supabase.
+            </p>
+          </FullWidth>
+        </SectionCard>
 
         {/* Section 1 — Project basics */}
         <SectionCard title="Project Details">

@@ -22,6 +22,7 @@ export interface Project {
   offerType:      string;   // e.g. "SaaS", "Professional Service"
   targetAudience: string;   // e.g. "SMBs", "Enterprise"
   geoFocus:       string;   // e.g. "Local", "Global"
+  keywordSource:  "hardcoded" | "historical";
   createdAt: string;        // ISO 8601
   updatedAt: string;        // ISO 8601
 }
@@ -37,6 +38,7 @@ export interface ProjectAssumptions {
   avgDealSize: number;
   closeRate: number;
   lpConversionRate: number;
+  keywordSource: "hardcoded" | "historical";
 }
 
 export const PROJECT_DEFAULTS: ProjectAssumptions = {
@@ -46,6 +48,7 @@ export const PROJECT_DEFAULTS: ProjectAssumptions = {
   avgDealSize:      10000,
   closeRate:        20,
   lpConversionRate: 3.5,
+  keywordSource:    "hardcoded",
 };
 
 /** Convert a stored Project to the slim ProjectAssumptions used by engines. */
@@ -57,6 +60,7 @@ export function projectToAssumptions(project: Project): ProjectAssumptions {
     avgDealSize:      project.avgDealSize,
     closeRate:        project.closeRate,
     lpConversionRate: project.lpConversionRate,
+    keywordSource:    project.keywordSource ?? "hardcoded",
   };
 }
 

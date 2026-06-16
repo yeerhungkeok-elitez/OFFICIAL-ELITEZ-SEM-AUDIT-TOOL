@@ -87,7 +87,7 @@ export interface SystemOverride {
   exclude:        boolean;
   forceBuy:       boolean;
   forceTest:      boolean;
-  campaignGroup?: string;  // perf category override: brand | service | competitor | other
+  campaignGroup?: string;  // perf category override: brand | generic | highIntent | competitor
 }
 
 // ─── Merged workspace keyword ─────────────────────────────────────────────────

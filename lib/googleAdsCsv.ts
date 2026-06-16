@@ -20,7 +20,7 @@
 //   service    → contains "generic" or "recruitment search"
 //   other      → everything else
 
-export type PerfCategory = "brand" | "service" | "competitor" | "other";
+export type PerfCategory = "brand" | "generic" | "highIntent" | "competitor";
 
 export interface ParsedPerfRow {
   keyword:     string;
@@ -54,8 +54,9 @@ function categorize(campaign: string, adGroup: string): PerfCategory {
   const s = `${campaign} ${adGroup}`.toLowerCase();
   if (s.includes("brand")) return "brand";
   if (s.includes("competitor")) return "competitor";
-  if (s.includes("generic") || s.includes("recruitment search")) return "service";
-  return "other";
+  if (s.includes("high intent") || s.includes("highintent")) return "highIntent";
+  if (s.includes("generic") || s.includes("recruitment search")) return "generic";
+  return "generic";
 }
 
 /**

@@ -98,8 +98,8 @@ const CVR_MIDPOINT_BY_INTENT: Record<Intent, number> = {
 const OLD_PRIOR_CVR_BY_PERF_CAT: Record<string, number> = {
   brand:      0.15,
   competitor: 0.05,
-  service:    0.02,
-  other:      0.02,
+  generic:    0.02,
+  highIntent: 0.06,
 };
 
 // ─── Match type forecast modifiers ───────────────────────────────────────────

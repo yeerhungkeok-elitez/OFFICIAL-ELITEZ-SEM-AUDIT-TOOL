@@ -15,9 +15,9 @@ export const FULL_TRUST_CLICKS_CPC  = 75;   // CPC
 
 const PRIOR_CVR: Record<string, number> = {
   brand:      0.03,
-  service:    0.06,
+  generic:    0.02,
+  highIntent: 0.06,
   competitor: 0.06,
-  other:      0.03,
 };
 
 export interface CategoryBenchmark {
@@ -52,13 +52,11 @@ export function toPerfCategory(engineCategory: string, intent?: string): string 
   const c = engineCategory.toLowerCase();
   if (c === "brand") return "brand";
   if (c === "competitor") return "competitor";
-  if (c === "service") return "service";
-  if (c === "other") return "other";
-  if (["commercial", "purchase", "comparison", "local", "urgent", "high-intent", "pricing", "highintent"].includes(c))
-    return "service";
-  if (c === "generic") return "service";
+  if (c === "highintent" || c === "high-intent") return "highIntent";
+  if (["commercial", "purchase", "comparison"].includes(c)) return "highIntent";
+  if (["generic", "service", "other", "local", "urgent", "pricing"].includes(c)) return "generic";
   if (intent === "Navigational") return "brand";
-  return "other";
+  return "generic";
 }
 
 /**
