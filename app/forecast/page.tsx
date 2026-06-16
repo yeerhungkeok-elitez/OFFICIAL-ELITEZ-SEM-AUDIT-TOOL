@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useEffect } from "react";
 import Link from "next/link";
-import { Info, Settings2, Download } from "lucide-react";
+import { Info, Settings2, Download, ChevronDown } from "lucide-react";
 import {
   projectToAssumptions,
   PROJECT_DEFAULTS,
@@ -133,6 +133,7 @@ export default function ForecastPage() {
   const [availableMonths, setAvailableMonths] = useState<MonthOption[]>([]);
   const [selectedMonths,  setSelectedMonths]  = useState<string[]>([]);
   const isMonthlyMode = availableMonths.length > 0;
+  const [forecastBasisOpen, setForecastBasisOpen] = useState(false);
 
   const { activeProject, activeScenario, calibration, monthlyForecast, refreshCalibration } = useAppContext();
   const scenario     = activeScenario;
@@ -607,91 +608,108 @@ export default function ForecastPage() {
         </div>
       )}
 
-      {/* Month Selector */}
+      {/* Month Selector — accordion, closed by default */}
       {isMonthlyMode && (
-        <div className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-800">Forecast Basis</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Select months to base the forecast on. Deselect outliers to exclude them from the averaged CPC, CVR, and budget distribution.
-            </p>
-          </div>
-
-          {/* Month rows */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-slate-100">
-                  <th className="py-2 pr-3 w-8" />
-                  <th className="py-2 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Month</th>
-                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Budget Spent</th>
-                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CPC</th>
-                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CVR</th>
-                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Clicks</th>
-                  <th className="py-2 text-right font-semibold text-slate-400 uppercase tracking-wider">Leads</th>
-                </tr>
-              </thead>
-              <tbody>
-                {availableMonths.map((m) => {
-                  const isSelected = selectedMonths.includes(m.periodMonth);
-                  const isOnly     = selectedMonths.length === 1 && isSelected;
-                  return (
-                    <tr
-                      key={m.periodMonth}
-                      className={`border-t border-slate-50 transition-colors cursor-pointer hover:bg-slate-50 ${isSelected ? "" : "opacity-50"}`}
-                      onClick={() => toggleMonth(m.periodMonth)}
-                    >
-                      <td className="py-2.5 pr-3">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          disabled={isOnly}
-                          onChange={() => toggleMonth(m.periodMonth)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-4 h-4 accent-brand-500 cursor-pointer disabled:cursor-not-allowed"
-                        />
-                      </td>
-                      <td className="py-2.5 pr-4 font-semibold text-slate-800">{m.label}</td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">
-                        MYR {m.totalBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                      </td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">MYR {m.avgCpc.toFixed(2)}</td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">{(m.avgCvr * 100).toFixed(1)}%</td>
-                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">{m.totalClicks.toLocaleString()}</td>
-                      <td className="py-2.5 text-right tabular-nums text-slate-500">{m.totalLeads}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Checker — per-category averages applied to forecast */}
-          {monthlyAveraged.length > 0 && (
-            <div className="border-t border-slate-100 pt-3">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Applied to forecast · avg of {selectedMonths.length} selected month{selectedMonths.length !== 1 ? "s" : ""}
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setForecastBasisOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-slate-50 transition-colors"
+          >
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Forecast Basis</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {selectedMonths.length} month{selectedMonths.length !== 1 ? "s" : ""} selected · click to {forecastBasisOpen ? "collapse" : "expand"}
               </p>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    <th className="py-1.5 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Category</th>
-                    <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Cost Dist</th>
-                    <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">CPC</th>
-                    <th className="py-1.5 text-right font-semibold text-slate-400 uppercase tracking-wider">CVR</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthlyAveraged.map((a) => (
-                    <tr key={a.category} className="border-t border-slate-50">
-                      <td className="py-1.5 pr-4 font-medium text-slate-700 capitalize">{a.category}</td>
-                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{(a.costDist * 100).toFixed(0)}%</td>
-                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">MYR {a.avgCpc.toFixed(2)}</td>
-                      <td className="py-1.5 text-right tabular-nums text-slate-700">{(a.avgCvr * 100).toFixed(1)}%</td>
+            </div>
+            <ChevronDown
+              className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${forecastBasisOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+
+          {forecastBasisOpen && (
+            <div className="border-t border-slate-100 px-5 pb-5 pt-4 flex flex-col gap-4">
+              <p className="text-xs text-slate-400">
+                Select months to base the forecast on. Deselect outliers to exclude them from the averaged CPC, CVR, and budget distribution.
+              </p>
+
+              {/* Month rows */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      <th className="py-2 pr-3 w-8" />
+                      <th className="py-2 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Month</th>
+                      <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Budget Spent</th>
+                      <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CPC</th>
+                      <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CVR</th>
+                      <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Clicks</th>
+                      <th className="py-2 text-right font-semibold text-slate-400 uppercase tracking-wider">Leads</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {availableMonths.map((m) => {
+                      const isSelected = selectedMonths.includes(m.periodMonth);
+                      const isOnly     = selectedMonths.length === 1 && isSelected;
+                      return (
+                        <tr
+                          key={m.periodMonth}
+                          className={`border-t border-slate-50 transition-colors cursor-pointer hover:bg-slate-50 ${isSelected ? "" : "opacity-50"}`}
+                          onClick={() => toggleMonth(m.periodMonth)}
+                        >
+                          <td className="py-2.5 pr-3">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={isOnly}
+                              onChange={() => toggleMonth(m.periodMonth)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-4 h-4 accent-brand-500 cursor-pointer disabled:cursor-not-allowed"
+                            />
+                          </td>
+                          <td className="py-2.5 pr-4 font-semibold text-slate-800">{m.label}</td>
+                          <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">
+                            MYR {m.totalBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </td>
+                          <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">MYR {m.avgCpc.toFixed(2)}</td>
+                          <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">{(m.avgCvr * 100).toFixed(1)}%</td>
+                          <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">{m.totalClicks.toLocaleString()}</td>
+                          <td className="py-2.5 text-right tabular-nums text-slate-500">{m.totalLeads}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Checker — per-category averages applied to forecast */}
+              {monthlyAveraged.length > 0 && (
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Applied to forecast · avg of {selectedMonths.length} selected month{selectedMonths.length !== 1 ? "s" : ""}
+                  </p>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="py-1.5 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Category</th>
+                        <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Cost Dist</th>
+                        <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">CPC</th>
+                        <th className="py-1.5 text-right font-semibold text-slate-400 uppercase tracking-wider">CVR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyAveraged.map((a) => (
+                        <tr key={a.category} className="border-t border-slate-50">
+                          <td className="py-1.5 pr-4 font-medium text-slate-700 capitalize">{a.category}</td>
+                          <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{(a.costDist * 100).toFixed(0)}%</td>
+                          <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">MYR {a.avgCpc.toFixed(2)}</td>
+                          <td className="py-1.5 text-right tabular-nums text-slate-700">{(a.avgCvr * 100).toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
