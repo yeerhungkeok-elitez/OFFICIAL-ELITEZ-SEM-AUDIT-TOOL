@@ -83,10 +83,11 @@ export interface LibraryKeyword {
 
 /** Row-level override for a system keyword. */
 export interface SystemOverride {
-  id:        number;
-  exclude:   boolean;
-  forceBuy:  boolean;
-  forceTest: boolean;
+  id:             number;
+  exclude:        boolean;
+  forceBuy:       boolean;
+  forceTest:      boolean;
+  campaignGroup?: string;  // perf category override: brand | service | competitor | other
 }
 
 // ─── Merged workspace keyword ─────────────────────────────────────────────────
@@ -580,6 +581,7 @@ export function buildWorkspaceKeywords(
       note:                 "",
       packName:             "",
       isLibrary:            false,
+      campaignGroup:        ov?.campaignGroup,
       exclude:              exc,
       forceBuy:             fb,
       forceTest:            ft,

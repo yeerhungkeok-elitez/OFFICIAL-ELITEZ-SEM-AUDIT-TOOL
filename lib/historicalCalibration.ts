@@ -52,6 +52,8 @@ export function toPerfCategory(engineCategory: string, intent?: string): string 
   const c = engineCategory.toLowerCase();
   if (c === "brand") return "brand";
   if (c === "competitor") return "competitor";
+  if (c === "service") return "service";
+  if (c === "other") return "other";
   if (["commercial", "purchase", "comparison", "local", "urgent", "high-intent", "pricing", "highintent"].includes(c))
     return "service";
   if (c === "generic") return "service";
