@@ -12,9 +12,10 @@ import {
   KEYWORDS,
   KEYWORD_COUNTRIES,
   type PriorityLevel,
+  type CountryForecast,
 } from "@/lib/keywordEngine";
 import {
-  allocateBudgets, buildCountryForecasts, enrich,
+  allocateBudgets, buildCountryForecasts, enrich, getPriority,
   SCENARIO_SPECS, computeScenarioForecast,
   type ScenarioForecast,
 } from "@/lib/forecastEngine";
@@ -217,27 +218,46 @@ export default function ForecastPage() {
     [inScopeKws, effectiveAssumptions.monthlyBudget, calibration]
   );
 
-  const rawTotals = useMemo(() => {
-    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, {
-      matchMods:  buildMatchTypeModifiers(fa),
-      calibration: calibration ?? undefined,
-    });
-    return {
-      totalLeads:   enriched.reduce((s, k) => s + k.estimatedLeads,    0),
-      totalRevenue: enriched.reduce((s, k) => s + k.revenuePotential,  0),
-    };
-  }, [inScopeKws, budgetMap, effectiveAssumptions, fa, calibration]);
-
-  const countryForecasts = useMemo(
-    () => buildCountryForecasts(
-      inScopeKws as never, budgetMap, effectiveAssumptions,
-      rawTotals.totalRevenue, rawTotals.totalLeads,
-      fa.sqlRate / 100,
-      calibration ?? undefined,
-      buildMatchTypeModifiers(fa),
-    ).sort((a, b) => b.revenue - a.revenue),
-    [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa, calibration]
+  // Single enrich pass — identical opts to Campaign Summary so all sections agree
+  const enrichedForForecast = useMemo(() =>
+    enrich(inScopeKws as never, budgetMap, effectiveAssumptions, {
+      matchMods:             buildMatchTypeModifiers(fa),
+      brandCvrUplift:        fa.brandCvrUplift,
+      competitorCvrDiscount: fa.competitorCvrDiscount,
+      cpcMultiplier:         fa.cpcMultiplier,
+      calibration:           calibration ?? undefined,
+    }),
+    [inScopeKws, budgetMap, effectiveAssumptions, fa, calibration]
   );
+
+  const rawTotals = useMemo(() => ({
+    totalLeads:   enrichedForForecast.reduce((s, k) => s + k.estimatedLeads,   0),
+    totalRevenue: enrichedForForecast.reduce((s, k) => s + k.revenuePotential, 0),
+  }), [enrichedForForecast]);
+
+  const countryForecasts = useMemo((): CountryForecast[] => {
+    const { totalLeads, totalRevenue } = rawTotals;
+    const sqlRate = fa.sqlRate / 100;
+    const byCountry = new Map<string, typeof enrichedForForecast>();
+    for (const kw of enrichedForForecast) {
+      const c = (kw as { country?: string }).country ?? "";
+      if (!byCountry.has(c)) byCountry.set(c, []);
+      byCountry.get(c)!.push(kw);
+    }
+    return Array.from(byCountry.entries()).map(([country, kws]) => {
+      const budget     = kws.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+      const buyBudget  = kws.filter((k) => (k as { action?: string }).action === "Buy").reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+      const testBudget = kws.filter((k) => (k as { action?: string }).action === "Test").reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
+      const clicks     = kws.reduce((s, k) => s + k.estimatedClicks, 0);
+      const leads      = kws.reduce((s, k) => s + k.estimatedLeads,  0);
+      const cpl        = leads > 0 ? Math.round(budget / leads) : 0;
+      const sql        = Math.round(leads * sqlRate);
+      const deals      = Math.round(leads * (effectiveAssumptions.closeRate / 100));
+      const revenue    = deals * effectiveAssumptions.avgDealSize;
+      const priority   = getPriority(leads, revenue, totalLeads, totalRevenue);
+      return { country, budget, buyBudget, testBudget, clicks, leads, cpl, sql, deals, revenue, priority };
+    }).sort((a, b) => b.revenue - a.revenue);
+  }, [enrichedForForecast, rawTotals, fa.sqlRate, effectiveAssumptions]);
 
   const totals = useMemo(() => {
     const budget  = countryForecasts.reduce((s, c) => s + c.budget,  0);
