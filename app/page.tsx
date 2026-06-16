@@ -23,6 +23,7 @@ import { projectToAssumptions, PROJECT_DEFAULTS } from "@/lib/projectStore";
 import { KEYWORDS, KEYWORD_COUNTRIES } from "@/lib/keywordEngine";
 import type { Keyword } from "@/lib/keywordEngine";
 import { allocateBudgets, enrich } from "@/lib/forecastEngine";
+import { type CalibrationMap } from "@/lib/historicalCalibration";
 import {
   getForecastAssumptions,
   buildMatchTypeModifiers,
@@ -57,18 +58,18 @@ const CATEGORY_LABELS: Record<KeywordCategory, string> = {
 // ─── Group-aware budget allocation (mirrors keywords page) ────────────────────
 
 function groupedBudgetAllocate(
-  forecastKws:              Keyword[],
-  kwCampaignMap:            Map<number, string | undefined>,
-  campaigns:                Campaign[],
-  totalBudget:              number,
-  calibratedCvrByCategory?: Record<string, number>,
+  forecastKws:   Keyword[],
+  kwCampaignMap: Map<number, string | undefined>,
+  campaigns:     Campaign[],
+  totalBudget:   number,
+  calib?:        CalibrationMap,
 ): Map<number, number> {
   const manualCampaigns = campaigns.filter(
     (c) => (c.budgetMode ?? "auto") === "manual" && (c.budgetAmount ?? 0) > 0 && !c.excludeFromForecast,
   );
 
   if (manualCampaigns.length === 0) {
-    return allocateBudgets(forecastKws, totalBudget, calibratedCvrByCategory);
+    return allocateBudgets(forecastKws, totalBudget, calib);
   }
 
   const rawManualTotal = manualCampaigns.reduce((s, c) => s + (c.budgetAmount ?? 0), 0);
@@ -89,11 +90,11 @@ function groupedBudgetAllocate(
   }
 
   const resultMap = new Map<number, number>();
-  allocateBudgets(autoKws, remainingAuto, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
+  allocateBudgets(autoKws, remainingAuto, calib).forEach((budget, id) => resultMap.set(id, budget));
   for (const c of manualCampaigns) {
     const kwList  = manualKwsByCampaign.get(c.id) ?? [];
     const cBudget = Math.round((c.budgetAmount ?? 0) * scale);
-    allocateBudgets(kwList, cBudget, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
+    allocateBudgets(kwList, cBudget, calib).forEach((budget, id) => resultMap.set(id, budget));
   }
 
   return resultMap;
@@ -158,7 +159,7 @@ function WarningCard({ w }: { w: PlanningWarning }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
+  const { activeProject, activeScenario, calibration } = useAppContext();
 
   const [fa, setFa] = useState<ForecastAssumptions>(DEFAULT_FORECAST_ASSUMPTIONS);
   useEffect(() => {
@@ -225,8 +226,8 @@ export default function DashboardPage() {
   }, [workspaceKws]);
 
   const budgetMap = useMemo(
-    () => groupedBudgetAllocate(forecastReadyKws as unknown as Keyword[], kwCampaignMap, campaigns, assumptions.monthlyBudget, calibratedCvr ?? undefined),
-    [forecastReadyKws, kwCampaignMap, campaigns, assumptions.monthlyBudget, calibratedCvr],
+    () => groupedBudgetAllocate(forecastReadyKws as unknown as Keyword[], kwCampaignMap, campaigns, assumptions.monthlyBudget, calibration ?? undefined),
+    [forecastReadyKws, kwCampaignMap, campaigns, assumptions.monthlyBudget, calibration],
   );
 
   const enrichedForecast = useMemo(
@@ -235,9 +236,9 @@ export default function DashboardPage() {
       brandCvrUplift:          fa.brandCvrUplift,
       competitorCvrDiscount:   fa.competitorCvrDiscount,
       cpcMultiplier:           fa.cpcMultiplier,
-      calibratedCvrByCategory: calibratedCvr ?? undefined,
+      calibration: calibration ?? undefined,
     }),
-    [forecastReadyKws, budgetMap, assumptions, fa, calibratedCvr],
+    [forecastReadyKws, budgetMap, assumptions, fa, calibration],
   );
 
   // ─── KPI totals ───────────────────────────────────────────────────────────

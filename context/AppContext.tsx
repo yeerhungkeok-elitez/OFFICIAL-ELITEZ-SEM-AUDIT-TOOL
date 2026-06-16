@@ -27,7 +27,8 @@ import {
   ensureDefaultScenarios,
   type Scenario,
 } from "@/lib/scenarioStore";
-import { loadBlendedCvrMap } from "@/lib/historicalCalibration";
+import { loadBlendedBenchmarks, type CalibrationMap } from "@/lib/historicalCalibration";
+import { forecastNextMonth, type CategoryForecast } from "@/lib/monthlyBenchmarks";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,8 +48,9 @@ interface AppContextValue {
   refreshScenarios:   () => void;
   refreshCalibration: () => void;
 
-  // Calibration — blended CVR map loaded from Supabase for the active project
-  calibratedCvr: Record<string, number> | null;
+  // Calibration — full CalibrationMap + monthly forecast loaded from Supabase
+  calibration:     CalibrationMap | null;
+  monthlyForecast: CategoryForecast[] | null;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -68,7 +70,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeProject,  setActiveProjectState]  = useState<Project | null>(null);
   const [scenarios,      setScenarios]           = useState<Scenario[]>([]);
   const [activeScenario, setActiveScenarioState] = useState<Scenario | null>(null);
-  const [calibratedCvr,  setCalibratedCvr]       = useState<Record<string, number> | null>(null);
+  const [calibration,     setCalibration]     = useState<CalibrationMap | null>(null);
+  const [monthlyForecast, setMonthlyForecast] = useState<CategoryForecast[] | null>(null);
 
   // ─── Internal: load scenarios for a project ───────────────────────────────
 
@@ -92,8 +95,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ─── Calibration: reload blended CVR map when active project changes ─────
 
   useEffect(() => {
-    if (!activeProject) { setCalibratedCvr(null); return; }
-    loadBlendedCvrMap(activeProject.id).then(setCalibratedCvr);
+    if (!activeProject) { setCalibration(null); setMonthlyForecast(null); return; }
+    loadBlendedBenchmarks(activeProject.id).then(setCalibration);
+    forecastNextMonth(activeProject.id).then(setMonthlyForecast);
   }, [activeProject?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Public mutators ──────────────────────────────────────────────────────
@@ -142,7 +146,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshCalibration = useCallback(() => {
     if (!activeProject) return;
-    loadBlendedCvrMap(activeProject.id).then(setCalibratedCvr);
+    loadBlendedBenchmarks(activeProject.id).then(setCalibration);
+    forecastNextMonth(activeProject.id).then(setMonthlyForecast);
   }, [activeProject]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -157,7 +162,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshProjects,
     refreshScenarios,
     refreshCalibration,
-    calibratedCvr,
+    calibration,
+    monthlyForecast,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

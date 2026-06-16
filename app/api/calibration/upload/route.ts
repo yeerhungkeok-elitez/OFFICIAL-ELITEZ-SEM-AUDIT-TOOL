@@ -99,11 +99,14 @@ export async function POST(req: NextRequest) {
       skipped,
       benchmarks: benchmarks
         .map((b) => ({
-          category:   b.category,
-          actualCvr:  +(b.actualCvr * 100).toFixed(1),
-          blendedCvr: +(b.blendedCvr * 100).toFixed(1),
-          clicks:     b.clicks,
-          confidence: +b.confidence.toFixed(2),
+          category:    b.category,
+          actualCtr:   +(b.actualCtr * 100).toFixed(1),
+          actualCpc:   +b.actualCpc.toFixed(2),
+          actualCvr:   +(b.actualCvr * 100).toFixed(1),
+          blendedCvr:  +(b.blendedCvr * 100).toFixed(1),
+          clicks:      b.clicks,
+          impressions: b.impressions,
+          confidence:  +b.confidence.toFixed(2),
         }))
         .sort((a, b) => b.actualCvr - a.actualCvr),
       forecast: forecast.map((f) => ({

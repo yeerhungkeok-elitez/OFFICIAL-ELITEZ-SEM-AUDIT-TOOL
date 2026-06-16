@@ -126,7 +126,7 @@ export default function ForecastPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const { activeProject, activeScenario, calibratedCvr, refreshCalibration } = useAppContext();
+  const { activeProject, activeScenario, calibration, monthlyForecast, refreshCalibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
   const assumptions: ProjectAssumptions = useMemo(
@@ -194,26 +194,26 @@ export default function ForecastPage() {
   }, [scenarioKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries, scenario]);
 
   const budgetMap = useMemo(
-    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
-    [inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr]
+    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibration ?? undefined),
+    [inScopeKws, effectiveAssumptions.monthlyBudget, calibration]
   );
 
   const rawTotals = useMemo(() => {
-    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, { calibratedCvrByCategory: calibratedCvr ?? undefined });
+    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, { calibration: calibration ?? undefined });
     return {
       totalLeads:   enriched.reduce((s, k) => s + k.estimatedLeads,    0),
       totalRevenue: enriched.reduce((s, k) => s + k.revenuePotential,  0),
     };
-  }, [inScopeKws, budgetMap, effectiveAssumptions, calibratedCvr]);
+  }, [inScopeKws, budgetMap, effectiveAssumptions, calibration]);
 
   const countryForecasts = useMemo(
     () => buildCountryForecasts(
       inScopeKws as never, budgetMap, effectiveAssumptions,
       rawTotals.totalRevenue, rawTotals.totalLeads,
       fa.sqlRate / 100,
-      calibratedCvr ?? undefined,
+      calibration ?? undefined,
     ).sort((a, b) => b.revenue - a.revenue),
-    [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate]
+    [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate, calibration]
   );
 
   const totals = useMemo(() => {
@@ -277,13 +277,13 @@ export default function ForecastPage() {
     );
     if (inScope.length === 0) return [];
 
-    const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined);
+    const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget, calibration ?? undefined);
     const enriched = enrich(inScope as never, bMap, effectiveAssumptions, {
       matchMods:               buildMatchTypeModifiers(fa),
       brandCvrUplift:          fa.brandCvrUplift,
       competitorCvrDiscount:   fa.competitorCvrDiscount,
       cpcMultiplier:           fa.cpcMultiplier,
-      calibratedCvrByCategory: calibratedCvr ?? undefined,
+      calibration:             calibration ?? undefined,
     });
 
     const totalBudget = enriched.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
@@ -327,7 +327,7 @@ export default function ForecastPage() {
       });
     }
     return rows.sort((a, b) => b.budget - a.budget);
-  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa, calibratedCvr]);
+  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa, calibration]);
 
   // Base keywords (no active-scenario CPC adjustment) for clean scenario comparison
   const baseInScopeKws = useMemo(() => {
@@ -339,8 +339,8 @@ export default function ForecastPage() {
   }, [wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries]);
 
   const baseBudgetMap = useMemo(
-    () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget, calibratedCvr ?? undefined),
-    [baseInScopeKws, assumptions.monthlyBudget, calibratedCvr],
+    () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget, calibration ?? undefined),
+    [baseInScopeKws, assumptions.monthlyBudget, calibration],
   );
 
   // 3-scenario outlook: Conservative / Balanced / Aggressive
@@ -348,16 +348,16 @@ export default function ForecastPage() {
     if (baseInScopeKws.length === 0) return [];
     const mods = buildMatchTypeModifiers(fa);
     return SCENARIO_SPECS.map((spec) =>
-      computeScenarioForecast(baseInScopeKws as never, baseBudgetMap, assumptions, spec, mods, calibratedCvr ?? undefined),
+      computeScenarioForecast(baseInScopeKws as never, baseBudgetMap, assumptions, spec, mods, calibration ?? undefined),
     );
-  }, [baseInScopeKws, baseBudgetMap, assumptions, fa, calibratedCvr]);
+  }, [baseInScopeKws, baseBudgetMap, assumptions, fa, calibration]);
 
   // ─── Calibration upload state ────────────────────────────────────────────────
   const [calibFile,   setCalibFile]   = useState<File | null>(null);
   const [calibUpload, setCalibUpload] = useState<{
     status: "idle" | "uploading" | "done" | "error";
     message?: string;
-    benchmarks?: { category: string; actualCvr: number; blendedCvr: number; clicks: number; confidence: number }[];
+    benchmarks?: { category: string; actualCtr: number; actualCpc: number; actualCvr: number; blendedCvr: number; clicks: number; impressions: number; confidence: number }[];
   }>({ status: "idle" });
 
   async function handleCalibrationUpload() {
@@ -434,7 +434,7 @@ export default function ForecastPage() {
             <h3 className="text-sm font-semibold text-slate-800">Performance Data Calibration</h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Upload a Google Ads "Search keyword" export to anchor CVR forecasts to your actual conversion data.
-              {calibratedCvr && (
+              {calibration && (
                 <span className="ml-1 text-emerald-600 font-medium">✓ Calibration active</span>
               )}
             </p>
@@ -475,6 +475,8 @@ export default function ForecastPage() {
                 <thead>
                   <tr className="border-b border-slate-100">
                     <th className="text-left py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Category</th>
+                    <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Actual CTR</th>
+                    <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Actual CPC</th>
                     <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Actual CVR</th>
                     <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Blended CVR</th>
                     <th className="text-right py-1.5 pr-4 font-semibold text-slate-500 uppercase tracking-wider">Clicks</th>
@@ -485,6 +487,8 @@ export default function ForecastPage() {
                   {calibUpload.benchmarks.map((b) => (
                     <tr key={b.category} className="border-b border-slate-50">
                       <td className="py-1.5 pr-4 font-medium text-slate-700 capitalize">{b.category}</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{b.actualCtr}%</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">MYR {b.actualCpc}</td>
                       <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{b.actualCvr}%</td>
                       <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{b.blendedCvr}%</td>
                       <td className="py-1.5 pr-4 text-right tabular-nums text-slate-500">{b.clicks.toLocaleString()}</td>
@@ -547,7 +551,7 @@ export default function ForecastPage() {
           <span className="font-semibold">Forecast estimates only.</span>{" "}
           Budget is allocated proportionally by Opportunity Score (85% Buy / 15% Test).
           Estimates are adjusted to reflect real-world inefficiencies in traffic quality, competition, and landing page performance — including a B2B CPL floor of $25.
-          Clicks = budget ÷ effective CPC · Leads = clicks × blended CVR (intent + match type + country + LP realism) · SQL = leads × SQL rate · Deals = leads × close rate · Revenue = deals × avg deal size.
+          CTR, CPC and CVR are anchored to historical actuals per category where data exists, blended by confidence — falling back to priors otherwise. · Clicks = budget ÷ effective CPC · Leads = clicks × blended CVR (intent + match type + LP realism) · SQL = leads × SQL rate · Deals = leads × close rate · Revenue = deals × avg deal size.
           Actual results depend on ad quality, landing page performance, and market conditions.
         </p>
       </div>
@@ -668,6 +672,50 @@ export default function ForecastPage() {
           </div>
         );
       })()}
+
+      {/* Historical Run-Rate — next-month projection */}
+      {monthlyForecast && monthlyForecast.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <h3 className="text-sm font-semibold text-slate-800">Historical Run-Rate (Next Month)</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Recency-weighted projection from your uploaded actuals · Categories with ≥3 months of data rated High confidence
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  {["Category", "Trend", "Proj. Clicks", "Proj. Cost (MYR)", "Proj. CPC (MYR)", "Confidence", "Basis"].map((col) => (
+                    <th key={col} className="px-5 py-3 text-left font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {monthlyForecast.map((f) => (
+                  <tr key={f.category} className="border-t border-slate-50 hover:bg-slate-50/80 transition-colors">
+                    <td className="px-5 py-3 font-semibold text-slate-800 capitalize">{f.category}</td>
+                    <td className="px-5 py-3">
+                      <span className={`font-semibold ${f.trend === "up" ? "text-emerald-600" : f.trend === "down" ? "text-red-500" : "text-slate-400"}`}>
+                        {f.trend === "up" ? "↑ Up" : f.trend === "down" ? "↓ Down" : "→ Flat"}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 tabular-nums text-slate-700">{f.projected.clicks.toLocaleString()}</td>
+                    <td className="px-5 py-3 tabular-nums text-slate-700">{f.projected.cost.toLocaleString()}</td>
+                    <td className="px-5 py-3 tabular-nums text-slate-700">{f.projected.cpc.toFixed(2)}</td>
+                    <td className="px-5 py-3">
+                      <span className={`font-semibold ${f.confidence === "High" ? "text-emerald-600" : f.confidence === "Medium" ? "text-amber-500" : "text-slate-400"}`}>
+                        {f.confidence}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-slate-400 italic max-w-xs truncate">{f.basis}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Charts 2 × 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -26,6 +26,7 @@ import {
   type Keyword,
 } from "@/lib/keywordEngine";
 import { allocateBudgets, enrich } from "@/lib/forecastEngine";
+import { type CalibrationMap } from "@/lib/historicalCalibration";
 import { applyScenario } from "@/lib/scenarioStore";
 import { useAppContext } from "@/context/AppContext";
 import {
@@ -1632,18 +1633,18 @@ function CompactKeywordRow({
 // Keywords with no campaign are treated as an implicit "auto" pool.
 
 function groupedBudgetAllocate(
-  forecastKws:              Keyword[],
-  kwCampaignMap:            Map<number, string | undefined>,
-  campaigns:                Campaign[],
-  totalBudget:              number,
-  calibratedCvrByCategory?: Record<string, number>,
+  forecastKws:   Keyword[],
+  kwCampaignMap: Map<number, string | undefined>,
+  campaigns:     Campaign[],
+  totalBudget:   number,
+  calib?:        CalibrationMap,
 ): Map<number, number> {
   const manualCampaigns = campaigns.filter(
     (c) => (c.budgetMode ?? "auto") === "manual" && (c.budgetAmount ?? 0) > 0 && !c.excludeFromForecast
   );
 
   if (manualCampaigns.length === 0) {
-    return allocateBudgets(forecastKws, totalBudget, calibratedCvrByCategory);
+    return allocateBudgets(forecastKws, totalBudget, calib);
   }
 
   const rawManualTotal = manualCampaigns.reduce((s, c) => s + (c.budgetAmount ?? 0), 0);
@@ -1668,13 +1669,13 @@ function groupedBudgetAllocate(
   const resultMap = new Map<number, number>();
 
   // Auto pool
-  allocateBudgets(autoKws, remainingAuto, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
+  allocateBudgets(autoKws, remainingAuto, calib).forEach((budget, id) => resultMap.set(id, budget));
 
   // Manual campaigns — each gets its capped amount
   for (const c of manualCampaigns) {
     const kwList  = manualKwsByCampaign.get(c.id) ?? [];
     const cBudget = Math.round((c.budgetAmount ?? 0) * scale);
-    allocateBudgets(kwList, cBudget, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
+    allocateBudgets(kwList, cBudget, calib).forEach((budget, id) => resultMap.set(id, budget));
   }
 
   return resultMap;
@@ -3246,7 +3247,7 @@ function BucketSection({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function KeywordsPage() {
-  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
+  const { activeProject, activeScenario, calibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
 
@@ -3397,8 +3398,8 @@ export default function KeywordsPage() {
 
   // 4b. Budget allocation (group-aware when manual campaign budgets exist)
   const budgetMap = useMemo(
-    () => groupedBudgetAllocate(forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
-    [forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibratedCvr]
+    () => groupedBudgetAllocate(forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibration ?? undefined),
+    [forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibration]
   );
 
   // 5. Enriched forecast data
@@ -3408,9 +3409,9 @@ export default function KeywordsPage() {
       brandCvrUplift:          fa.brandCvrUplift,
       competitorCvrDiscount:   fa.competitorCvrDiscount,
       cpcMultiplier:           fa.cpcMultiplier,
-      calibratedCvrByCategory: calibratedCvr ?? undefined,
+      calibration: calibration ?? undefined,
     }),
-    [forecastReadyKws, budgetMap, effectiveAssumptions, fa, calibratedCvr]
+    [forecastReadyKws, budgetMap, effectiveAssumptions, fa, calibration]
   );
 
   // 6. Merge forecast + relevance back onto country-filtered workspace keywords
