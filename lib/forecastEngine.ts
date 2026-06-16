@@ -406,7 +406,9 @@ export function buildCountryForecasts(
   totalLeads: number,
   sqlRate?: number,
   calib?: CalibrationMap,
+  matchMods?: Record<MatchType, { cpcFactor: number; cvrFactor: number; label?: string }>,
 ): CountryForecast[] {
+  const resolvedMatchMods = matchMods ?? MATCH_TYPE_MODIFIERS;
   const resolvedSqlRate = sqlRate ?? SQL_RATE;
   const seen = new Set<string>();
   const countries = inScope
@@ -423,8 +425,8 @@ export function buildCountryForecasts(
       const b = budgetMap.get(kw.id) ?? 0;
 
       const resolvedMatchType = ((kw as { effectiveMatchType?: string }).effectiveMatchType ?? kw.matchType) as MatchType;
-      const matchMod     = MATCH_TYPE_MODIFIERS[resolvedMatchType] ?? MATCH_TYPE_MODIFIERS.Phrase;
-      const effectiveCpc = computeEffectiveCpc(kw, resolvedMatchType, MATCH_TYPE_MODIFIERS, 1.0, calib);
+      const matchMod     = resolvedMatchMods[resolvedMatchType] ?? resolvedMatchMods.Phrase ?? MATCH_TYPE_MODIFIERS.Phrase;
+      const effectiveCpc = computeEffectiveCpc(kw, resolvedMatchType, resolvedMatchMods, 1.0, calib);
 
       const pressureScore = kw.competitorPressureScore ?? 50;
       const position      = estimatePosition(pressureScore);

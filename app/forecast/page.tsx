@@ -218,12 +218,15 @@ export default function ForecastPage() {
   );
 
   const rawTotals = useMemo(() => {
-    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, { calibration: calibration ?? undefined });
+    const enriched = enrich(inScopeKws as never, budgetMap, effectiveAssumptions, {
+      matchMods:  buildMatchTypeModifiers(fa),
+      calibration: calibration ?? undefined,
+    });
     return {
       totalLeads:   enriched.reduce((s, k) => s + k.estimatedLeads,    0),
       totalRevenue: enriched.reduce((s, k) => s + k.revenuePotential,  0),
     };
-  }, [inScopeKws, budgetMap, effectiveAssumptions, calibration]);
+  }, [inScopeKws, budgetMap, effectiveAssumptions, fa, calibration]);
 
   const countryForecasts = useMemo(
     () => buildCountryForecasts(
@@ -231,8 +234,9 @@ export default function ForecastPage() {
       rawTotals.totalRevenue, rawTotals.totalLeads,
       fa.sqlRate / 100,
       calibration ?? undefined,
+      buildMatchTypeModifiers(fa),
     ).sort((a, b) => b.revenue - a.revenue),
-    [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate, calibration]
+    [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa, calibration]
   );
 
   const totals = useMemo(() => {
