@@ -123,6 +123,9 @@ function SplitBar({ buyBudget, testBudget }: { buyBudget: number; testBudget: nu
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ForecastPage() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const { activeProject, activeScenario, calibratedCvr, refreshCalibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
@@ -259,8 +262,11 @@ export default function ForecastPage() {
       generic:    "Generic / Service",
       highIntent: "High Intent",
       competitor: "Competitor",
-      pricing:    "Pricing / Cost",
-      local:      "Local / Geo",
+    };
+    // Fold removed categories into their nearest equivalent
+    const BUCKET_NORMALIZE: Record<string, string> = {
+      pricing: "generic",
+      local:   "generic",
     };
 
     const cpcMult = scenario?.cpcMultiplier ?? 1.0;
@@ -286,8 +292,9 @@ export default function ForecastPage() {
     const groups = new Map<string, typeof enriched>();
     for (const kw of enriched) {
       const cId    = (kw as { campaignId?: string }).campaignId;
-      const cGroup = (kw as { campaignGroup?: string }).campaignGroup;
-      const key    = cId ? `campaign:${cId}` : cGroup ? `bucket:${cGroup}` : "__unassigned__";
+      const rawGroup = (kw as { campaignGroup?: string }).campaignGroup;
+      const cGroup = rawGroup ? (BUCKET_NORMALIZE[rawGroup] ?? rawGroup) : undefined;
+      const key    = cId ? `campaign:${cId}` : `bucket:${cGroup ?? "generic"}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(kw);
     }
@@ -373,6 +380,8 @@ export default function ForecastPage() {
       setCalibUpload({ status: "error", message: e instanceof Error ? e.message : "Unknown error." });
     }
   }
+
+  if (!mounted) return null;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
