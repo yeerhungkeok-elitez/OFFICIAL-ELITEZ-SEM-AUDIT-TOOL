@@ -57,17 +57,18 @@ const CATEGORY_LABELS: Record<KeywordCategory, string> = {
 // ─── Group-aware budget allocation (mirrors keywords page) ────────────────────
 
 function groupedBudgetAllocate(
-  forecastKws:   Keyword[],
-  kwCampaignMap: Map<number, string | undefined>,
-  campaigns:     Campaign[],
-  totalBudget:   number,
+  forecastKws:              Keyword[],
+  kwCampaignMap:            Map<number, string | undefined>,
+  campaigns:                Campaign[],
+  totalBudget:              number,
+  calibratedCvrByCategory?: Record<string, number>,
 ): Map<number, number> {
   const manualCampaigns = campaigns.filter(
     (c) => (c.budgetMode ?? "auto") === "manual" && (c.budgetAmount ?? 0) > 0 && !c.excludeFromForecast,
   );
 
   if (manualCampaigns.length === 0) {
-    return allocateBudgets(forecastKws, totalBudget);
+    return allocateBudgets(forecastKws, totalBudget, calibratedCvrByCategory);
   }
 
   const rawManualTotal = manualCampaigns.reduce((s, c) => s + (c.budgetAmount ?? 0), 0);
@@ -88,11 +89,11 @@ function groupedBudgetAllocate(
   }
 
   const resultMap = new Map<number, number>();
-  allocateBudgets(autoKws, remainingAuto).forEach((budget, id) => resultMap.set(id, budget));
+  allocateBudgets(autoKws, remainingAuto, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
   for (const c of manualCampaigns) {
     const kwList  = manualKwsByCampaign.get(c.id) ?? [];
     const cBudget = Math.round((c.budgetAmount ?? 0) * scale);
-    allocateBudgets(kwList, cBudget).forEach((budget, id) => resultMap.set(id, budget));
+    allocateBudgets(kwList, cBudget, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
   }
 
   return resultMap;
@@ -224,8 +225,8 @@ export default function DashboardPage() {
   }, [workspaceKws]);
 
   const budgetMap = useMemo(
-    () => groupedBudgetAllocate(forecastReadyKws as unknown as Keyword[], kwCampaignMap, campaigns, assumptions.monthlyBudget),
-    [forecastReadyKws, kwCampaignMap, campaigns, assumptions.monthlyBudget],
+    () => groupedBudgetAllocate(forecastReadyKws as unknown as Keyword[], kwCampaignMap, campaigns, assumptions.monthlyBudget, calibratedCvr ?? undefined),
+    [forecastReadyKws, kwCampaignMap, campaigns, assumptions.monthlyBudget, calibratedCvr],
   );
 
   const enrichedForecast = useMemo(

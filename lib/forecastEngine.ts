@@ -93,6 +93,15 @@ const CVR_MIDPOINT_BY_INTENT: Record<Intent, number> = {
   Informational: 0.01,   // 0.5–1.5%
 };
 
+// Old CVR priors (from CVR_MIDPOINT) per perf-category, used to compute the
+// calibration adjustment ratio in allocateBudgets.
+const OLD_PRIOR_CVR_BY_PERF_CAT: Record<string, number> = {
+  brand:      0.15,
+  competitor: 0.05,
+  service:    0.02,
+  other:      0.02,
+};
+
 // ─── Match type forecast modifiers ───────────────────────────────────────────
 
 export const MATCH_TYPE_MODIFIERS: Record<MatchType, {
@@ -225,6 +234,7 @@ export function getConfidenceLevel(kw: Keyword): ConfidenceLevel {
 export function allocateBudgets(
   inScope: Keyword[],
   totalBudget: number,
+  calibratedCvrByCategory?: Record<string, number>,
 ): Map<number, number> {
   const buyKws  = inScope.filter((k) => k.action === "Buy");
   const testKws = inScope.filter((k) => k.action === "Test");
@@ -235,17 +245,31 @@ export function allocateBudgets(
   const buyRatio  = hasBuy  ? (hasTest ? 0.85 : 1.0) : 0;
   const testRatio = hasTest ? (hasBuy  ? 0.15 : 1.0) : 0;
 
-  const buyScoreSum  = buyKws.reduce((s, k)  => s + k.opportunityScore, 0);
-  const testScoreSum = testKws.reduce((s, k) => s + k.opportunityScore, 0);
+  // When calibration data is present, scale each keyword's opportunity score by
+  // (calibratedCVR / oldPriorCVR) so that keywords the data shows as high-CVR
+  // (service/competitor) attract proportionally more budget than brand, whose
+  // prior was 15% but actual is ~2.6%.
+  function adjScore(kw: Keyword): number {
+    if (!calibratedCvrByCategory) return kw.opportunityScore;
+    const perfCat  = toPerfCategory(getCategory(kw), kw.intent);
+    const calib    = calibratedCvrByCategory[perfCat];
+    const oldPrior = OLD_PRIOR_CVR_BY_PERF_CAT[perfCat] ?? 0.03;
+    if (!calib || calib <= 0) return kw.opportunityScore;
+    const ratio = Math.min(5, Math.max(0.1, calib / oldPrior));
+    return kw.opportunityScore * ratio;
+  }
+
+  const buyScoreSum  = buyKws.reduce((s, k)  => s + adjScore(k), 0);
+  const testScoreSum = testKws.reduce((s, k) => s + adjScore(k), 0);
 
   const map = new Map<number, number>();
 
   for (const kw of inScope) {
     let budget = 0;
     if (kw.action === "Buy"  && buyScoreSum  > 0) {
-      budget = Math.round((kw.opportunityScore / buyScoreSum)  * totalBudget * buyRatio);
+      budget = Math.round((adjScore(kw) / buyScoreSum)  * totalBudget * buyRatio);
     } else if (kw.action === "Test" && testScoreSum > 0) {
-      budget = Math.round((kw.opportunityScore / testScoreSum) * totalBudget * testRatio);
+      budget = Math.round((adjScore(kw) / testScoreSum) * totalBudget * testRatio);
     }
     map.set(kw.id, budget);
   }
@@ -369,6 +393,7 @@ export function buildCountryForecasts(
   totalRevenue: number,
   totalLeads: number,
   sqlRate?: number,
+  calibratedCvrByCategory?: Record<string, number>,
 ): CountryForecast[] {
   const resolvedSqlRate = sqlRate ?? SQL_RATE;
   const seen = new Set<string>();
@@ -400,7 +425,7 @@ export function buildCountryForecasts(
       const maxClicks = b > 0 && effectiveCpc > 0 ? b / effectiveCpc : 0;
       const rawClicks = Math.min(impClicks, maxClicks);
 
-      const effectiveCvr    = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod);
+      const effectiveCvr    = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, calibratedCvrByCategory);
       const rawLeads        = rawClicks * effectiveCvr;
       const guaranteedLeads = rawClicks > 10 ? Math.max(rawLeads, 1) : rawLeads;
       const cplCap          = b > 0 ? b / B2B_MIN_CPL : Infinity;

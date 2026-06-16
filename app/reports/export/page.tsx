@@ -202,8 +202,8 @@ export default function ExportProposalPage() {
   );
 
   const budgetMap = useMemo(
-    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget),
-    [inScopeKws, effectiveAssumptions.monthlyBudget]
+    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
+    [inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr]
   );
 
   const enrichedKws = useMemo(
@@ -223,7 +223,7 @@ export default function ExportProposalPage() {
   }), [enrichedKws]);
 
   const countryForecasts = useMemo(
-    () => buildCountryForecasts(inScopeKws, budgetMap, effectiveAssumptions, rawTotals.revenue, rawTotals.leads, fa.sqlRate / 100)
+    () => buildCountryForecasts(inScopeKws, budgetMap, effectiveAssumptions, rawTotals.revenue, rawTotals.leads, fa.sqlRate / 100, calibratedCvr ?? undefined)
           .sort((a, b) => b.revenue - a.revenue),
     [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate]
   );

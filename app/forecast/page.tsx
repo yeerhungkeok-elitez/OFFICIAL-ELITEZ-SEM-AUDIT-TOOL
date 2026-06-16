@@ -191,8 +191,8 @@ export default function ForecastPage() {
   }, [scenarioKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries, scenario]);
 
   const budgetMap = useMemo(
-    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget),
-    [inScopeKws, effectiveAssumptions.monthlyBudget]
+    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
+    [inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr]
   );
 
   const rawTotals = useMemo(() => {
@@ -208,6 +208,7 @@ export default function ForecastPage() {
       inScopeKws as never, budgetMap, effectiveAssumptions,
       rawTotals.totalRevenue, rawTotals.totalLeads,
       fa.sqlRate / 100,
+      calibratedCvr ?? undefined,
     ).sort((a, b) => b.revenue - a.revenue),
     [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate]
   );
@@ -270,7 +271,7 @@ export default function ForecastPage() {
     );
     if (inScope.length === 0) return [];
 
-    const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget);
+    const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined);
     const enriched = enrich(inScope as never, bMap, effectiveAssumptions, {
       matchMods:               buildMatchTypeModifiers(fa),
       brandCvrUplift:          fa.brandCvrUplift,
@@ -331,8 +332,8 @@ export default function ForecastPage() {
   }, [wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries]);
 
   const baseBudgetMap = useMemo(
-    () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget),
-    [baseInScopeKws, assumptions.monthlyBudget],
+    () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget, calibratedCvr ?? undefined),
+    [baseInScopeKws, assumptions.monthlyBudget, calibratedCvr],
   );
 
   // 3-scenario outlook: Conservative / Balanced / Aggressive

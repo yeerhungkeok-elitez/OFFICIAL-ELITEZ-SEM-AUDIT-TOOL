@@ -176,7 +176,7 @@ const SOURCE_LABELS: Record<KeywordSource, string> = {
 
 // ─── Keyword bucket definitions ───────────────────────────────────────────────
 
-type BucketColor = "violet" | "blue" | "emerald" | "orange" | "yellow" | "teal";
+type BucketColor = "violet" | "blue" | "emerald" | "orange";
 
 interface BucketDef {
   id:            string;
@@ -188,12 +188,10 @@ interface BucketDef {
 }
 
 const BUCKETS: BucketDef[] = [
-  { id: "brand",      label: "Brand",             description: "Protect your brand and capture existing demand.",      categories: ["brand"],                       campaignTypes: ["brand"],          color: "violet"  },
-  { id: "generic",    label: "Generic / Service",  description: "Core service discovery — buyers comparing options.",   categories: ["commercial","problem-aware"],  campaignTypes: ["generic","niche"], color: "blue"    },
-  { id: "highIntent", label: "High Intent",        description: "Ready-to-act searches from bottom-funnel buyers.",     categories: ["purchase","urgent"],            campaignTypes: ["high-intent"],    color: "emerald" },
-  { id: "competitor", label: "Competitor",         description: "Comparison and conquesting — displace rival traffic.", categories: ["competitor"],                   campaignTypes: ["competitor"],     color: "orange"  },
-  { id: "pricing",    label: "Pricing / Cost",     description: "Cost-sensitive searchers evaluating price and value.", categories: ["comparison"],                   campaignTypes: ["pricing"],        color: "yellow"  },
-  { id: "local",      label: "Local / Geo",        description: "Location-based searches from nearby buyers.",          categories: ["local"],                        campaignTypes: ["local"],          color: "teal"    },
+  { id: "brand",      label: "Brand",            description: "Protect your brand and capture existing demand.",      categories: ["brand"],                                        campaignTypes: ["brand"],                       color: "violet"  },
+  { id: "generic",    label: "Generic / Service", description: "Core service discovery — buyers comparing options.",   categories: ["commercial","problem-aware","comparison","local"], campaignTypes: ["generic","niche","pricing","local"], color: "blue"    },
+  { id: "highIntent", label: "High Intent",       description: "Ready-to-act searches from bottom-funnel buyers.",     categories: ["purchase","urgent"],                             campaignTypes: ["high-intent"],                 color: "emerald" },
+  { id: "competitor", label: "Competitor",        description: "Comparison and conquesting — displace rival traffic.", categories: ["competitor"],                                    campaignTypes: ["competitor"],                  color: "orange"  },
 ];
 
 const BUCKET_HEADER_CLS: Record<BucketColor, string> = {
@@ -201,24 +199,18 @@ const BUCKET_HEADER_CLS: Record<BucketColor, string> = {
   blue:    "bg-blue-50 border-blue-200",
   emerald: "bg-emerald-50 border-emerald-200",
   orange:  "bg-orange-50 border-orange-200",
-  yellow:  "bg-yellow-50 border-yellow-200",
-  teal:    "bg-teal-50 border-teal-200",
 };
 const BUCKET_BADGE_CLS: Record<BucketColor, string> = {
   violet:  "bg-violet-100 text-violet-700",
   blue:    "bg-blue-100 text-blue-700",
   emerald: "bg-emerald-100 text-emerald-700",
   orange:  "bg-orange-100 text-orange-700",
-  yellow:  "bg-yellow-100 text-yellow-700",
-  teal:    "bg-teal-100 text-teal-700",
 };
 const BUCKET_DOT_CLS: Record<BucketColor, string> = {
   violet:  "bg-violet-400",
   blue:    "bg-blue-400",
   emerald: "bg-emerald-400",
   orange:  "bg-orange-400",
-  yellow:  "bg-yellow-400",
-  teal:    "bg-teal-400",
 };
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
@@ -1640,17 +1632,18 @@ function CompactKeywordRow({
 // Keywords with no campaign are treated as an implicit "auto" pool.
 
 function groupedBudgetAllocate(
-  forecastKws:    Keyword[],
-  kwCampaignMap:  Map<number, string | undefined>,
-  campaigns:      Campaign[],
-  totalBudget:    number,
+  forecastKws:              Keyword[],
+  kwCampaignMap:            Map<number, string | undefined>,
+  campaigns:                Campaign[],
+  totalBudget:              number,
+  calibratedCvrByCategory?: Record<string, number>,
 ): Map<number, number> {
   const manualCampaigns = campaigns.filter(
     (c) => (c.budgetMode ?? "auto") === "manual" && (c.budgetAmount ?? 0) > 0 && !c.excludeFromForecast
   );
 
   if (manualCampaigns.length === 0) {
-    return allocateBudgets(forecastKws, totalBudget);
+    return allocateBudgets(forecastKws, totalBudget, calibratedCvrByCategory);
   }
 
   const rawManualTotal = manualCampaigns.reduce((s, c) => s + (c.budgetAmount ?? 0), 0);
@@ -1675,13 +1668,13 @@ function groupedBudgetAllocate(
   const resultMap = new Map<number, number>();
 
   // Auto pool
-  allocateBudgets(autoKws, remainingAuto).forEach((budget, id) => resultMap.set(id, budget));
+  allocateBudgets(autoKws, remainingAuto, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
 
   // Manual campaigns — each gets its capped amount
   for (const c of manualCampaigns) {
     const kwList  = manualKwsByCampaign.get(c.id) ?? [];
     const cBudget = Math.round((c.budgetAmount ?? 0) * scale);
-    allocateBudgets(kwList, cBudget).forEach((budget, id) => resultMap.set(id, budget));
+    allocateBudgets(kwList, cBudget, calibratedCvrByCategory).forEach((budget, id) => resultMap.set(id, budget));
   }
 
   return resultMap;
@@ -3404,8 +3397,8 @@ export default function KeywordsPage() {
 
   // 4b. Budget allocation (group-aware when manual campaign budgets exist)
   const budgetMap = useMemo(
-    () => groupedBudgetAllocate(forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget),
-    [forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget]
+    () => groupedBudgetAllocate(forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
+    [forecastReadyKws, kwCampaignMap, campaigns, effectiveAssumptions.monthlyBudget, calibratedCvr]
   );
 
   // 5. Enriched forecast data
