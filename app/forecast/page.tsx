@@ -31,6 +31,8 @@ import { useAppContext } from "@/context/AppContext";
 import { getLibraryKeywords, getSystemOverrides, buildWorkspaceKeywords, type WorkspaceKeyword } from "@/lib/keywordLibrary";
 import { loadHistoricalKeywords } from "@/lib/historicalKeywords";
 import { getCampaigns, getAdGroups, CAMPAIGN_TYPE_LABELS, CAMPAIGN_TYPE_STYLES } from "@/lib/campaignStore";
+import { loadMonthlyOptions, type MonthOption } from "@/lib/monthlyBenchmarks";
+import { averageMonthData, computeMonthlyForecast, type MonthlyForecastResult } from "@/lib/monthlyForecastEngine";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -128,6 +130,10 @@ export default function ForecastPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  const [availableMonths, setAvailableMonths] = useState<MonthOption[]>([]);
+  const [selectedMonths,  setSelectedMonths]  = useState<string[]>([]);
+  const isMonthlyMode = availableMonths.length > 0;
+
   const { activeProject, activeScenario, calibration, monthlyForecast, refreshCalibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
@@ -170,6 +176,15 @@ export default function ForecastPage() {
       .then(setHistoricalKws)
       .finally(() => setKwsLoading(false));
   }, [activeProject?.id, activeProject?.keywordSource]);
+
+  useEffect(() => {
+    if (!activeProject) { setAvailableMonths([]); setSelectedMonths([]); return; }
+    loadMonthlyOptions(activeProject.id).then((months) => {
+      setAvailableMonths(months);
+      // Auto-select the most recent month
+      setSelectedMonths(months.length > 0 ? [months[months.length - 1].periodMonth] : []);
+    });
+  }, [activeProject?.id]);
 
   // Effective assumptions with scenario multipliers applied
   const effectiveAssumptions = useMemo(
@@ -277,9 +292,40 @@ export default function ForecastPage() {
   const maxRevenue = Math.max(...countryForecasts.map((c) => c.revenue), 1);
   const roi = totals.budget > 0 ? (totals.revenue / totals.budget).toFixed(1) : "—";
 
+  const monthlyAveraged = useMemo(() => {
+    const selected = availableMonths.filter((m) => selectedMonths.includes(m.periodMonth));
+    return averageMonthData(selected);
+  }, [availableMonths, selectedMonths]);
+
+  const monthlyResult = useMemo<MonthlyForecastResult | null>(() => {
+    if (monthlyAveraged.length === 0) return null;
+    return computeMonthlyForecast(monthlyAveraged, effectiveAssumptions.monthlyBudget, {
+      sqlRate:     fa.sqlRate,
+      closeRate:   effectiveAssumptions.closeRate,
+      avgDealSize: effectiveAssumptions.avgDealSize,
+    });
+  }, [monthlyAveraged, effectiveAssumptions.monthlyBudget, effectiveAssumptions.closeRate, effectiveAssumptions.avgDealSize, fa.sqlRate]);
+
+  const displayTotals = useMemo(() => {
+    if (isMonthlyMode && monthlyResult) {
+      return {
+        budget:     monthlyResult.totals.budget,
+        clicks:     monthlyResult.totals.clicks,
+        leads:      monthlyResult.totals.leads,
+        cpl:        monthlyResult.totals.cpl,
+        sql:        monthlyResult.totals.sql,
+        deals:      monthlyResult.totals.deals,
+        revenue:    monthlyResult.totals.revenue,
+        buyBudget:  0,
+        testBudget: 0,
+      };
+    }
+    return totals;
+  }, [isMonthlyMode, monthlyResult, totals]);
+
   // Diagnose why forecast is $0
   const zeroBudgetDiagnosis = useMemo(() => {
-    if (totals.budget > 0) return null;
+    if (totals.budget > 0 || isMonthlyMode) return null;
     if (effectiveAssumptions.monthlyBudget === 0)
       return { msg: "Monthly budget is $0.", fix: "Set a budget in your project.", href: activeProject ? `/projects/${activeProject.id}/edit` : "/projects/new" };
     if (wsLibKws.length === 0)
@@ -296,7 +342,7 @@ export default function ForecastPage() {
     if (zeroCpc)
       return { msg: "Some active keywords have a $0 CPC, so no budget can be allocated.", fix: "Check the Keywords page for keywords with missing CPC values.", href: "/keywords" };
     return { msg: "Budget could not be allocated to any active keywords.", fix: "Check that your keywords have a Buy or Test action and a valid CPC.", href: "/keywords" };
-  }, [totals.budget, effectiveAssumptions, wsLibKws, inScopeKws, activeProject]);
+  }, [totals.budget, isMonthlyMode, effectiveAssumptions, wsLibKws, inScopeKws, activeProject]);
 
   // Campaign Summary — enriched workspace keywords grouped by campaign / bucket
   const campaignSummary = useMemo<CampaignSummaryRow[]>(() => {
@@ -408,6 +454,16 @@ export default function ForecastPage() {
     message?: string;
     benchmarks?: { category: string; actualCtr: number; actualCpc: number; actualCvr: number; blendedCvr: number; clicks: number; impressions: number; confidence: number }[];
   }>({ status: "idle" });
+
+  function toggleMonth(periodMonth: string) {
+    setSelectedMonths((prev) => {
+      if (prev.includes(periodMonth)) {
+        if (prev.length === 1) return prev; // always keep at least one selected
+        return prev.filter((m) => m !== periodMonth);
+      }
+      return [...prev, periodMonth];
+    });
+  }
 
   async function handleCalibrationUpload() {
     if (!calibFile || !activeProject) return;
@@ -551,6 +607,96 @@ export default function ForecastPage() {
         </div>
       )}
 
+      {/* Month Selector */}
+      {isMonthlyMode && (
+        <div className="bg-white rounded-2xl border border-slate-100 p-5 flex flex-col gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Forecast Basis</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Select months to base the forecast on. Deselect outliers to exclude them from the averaged CPC, CVR, and budget distribution.
+            </p>
+          </div>
+
+          {/* Month rows */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="py-2 pr-3 w-8" />
+                  <th className="py-2 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Month</th>
+                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Budget Spent</th>
+                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CPC</th>
+                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Avg CVR</th>
+                  <th className="py-2 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Clicks</th>
+                  <th className="py-2 text-right font-semibold text-slate-400 uppercase tracking-wider">Leads</th>
+                </tr>
+              </thead>
+              <tbody>
+                {availableMonths.map((m) => {
+                  const isSelected = selectedMonths.includes(m.periodMonth);
+                  const isOnly     = selectedMonths.length === 1 && isSelected;
+                  return (
+                    <tr
+                      key={m.periodMonth}
+                      className={`border-t border-slate-50 transition-colors cursor-pointer hover:bg-slate-50 ${isSelected ? "" : "opacity-50"}`}
+                      onClick={() => toggleMonth(m.periodMonth)}
+                    >
+                      <td className="py-2.5 pr-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={isOnly}
+                          onChange={() => toggleMonth(m.periodMonth)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-4 h-4 accent-brand-500 cursor-pointer disabled:cursor-not-allowed"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-4 font-semibold text-slate-800">{m.label}</td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">
+                        MYR {m.totalBudget.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">MYR {m.avgCpc.toFixed(2)}</td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-700">{(m.avgCvr * 100).toFixed(1)}%</td>
+                      <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">{m.totalClicks.toLocaleString()}</td>
+                      <td className="py-2.5 text-right tabular-nums text-slate-500">{m.totalLeads}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Checker — per-category averages applied to forecast */}
+          {monthlyAveraged.length > 0 && (
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Applied to forecast · avg of {selectedMonths.length} selected month{selectedMonths.length !== 1 ? "s" : ""}
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="py-1.5 pr-4 text-left font-semibold text-slate-400 uppercase tracking-wider">Category</th>
+                    <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">Cost Dist</th>
+                    <th className="py-1.5 pr-4 text-right font-semibold text-slate-400 uppercase tracking-wider">CPC</th>
+                    <th className="py-1.5 text-right font-semibold text-slate-400 uppercase tracking-wider">CVR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlyAveraged.map((a) => (
+                    <tr key={a.category} className="border-t border-slate-50">
+                      <td className="py-1.5 pr-4 font-medium text-slate-700 capitalize">{a.category}</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">{(a.costDist * 100).toFixed(0)}%</td>
+                      <td className="py-1.5 pr-4 text-right tabular-nums text-slate-700">MYR {a.avgCpc.toFixed(2)}</td>
+                      <td className="py-1.5 text-right tabular-nums text-slate-700">{(a.avgCvr * 100).toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Assumptions bar */}
       <div className="bg-white rounded-2xl border border-slate-100 px-5 py-3.5">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -607,14 +753,73 @@ export default function ForecastPage() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-3">
-        <KpiCard label="Total Budget"  value={`$${totals.budget.toLocaleString()}`}   sub="allocated to Buy + Test"   accent />
-        <KpiCard label="Proj. Clicks"  value={totals.clicks.toLocaleString()}          sub="across all countries"             />
-        <KpiCard label="Proj. Leads"   value={totals.leads.toLocaleString()}           sub={`${effectiveAssumptions.lpConversionRate.toFixed(2)}% LP CVR`} />
-        <KpiCard label="Proj. CPL"     value={totals.cpl > 0 ? `$${totals.cpl.toLocaleString()}` : "—"} sub="cost per lead"  />
-        <KpiCard label="Proj. SQL"     value={totals.sql.toLocaleString()}             sub={`${fa.sqlRate}% of leads`}    />
-        <KpiCard label="Proj. Deals"   value={totals.deals.toLocaleString()}           sub={`${effectiveAssumptions.closeRate}% close rate`} />
-        <KpiCard label="Proj. Revenue" value={totals.revenue > 0 ? `$${totals.revenue.toLocaleString()}` : "—"} sub={`${roi}× budget ROI`} />
+        <KpiCard label="Total Budget"  value={`$${Math.round(displayTotals.budget).toLocaleString()}`}  sub="allocated to Buy + Test"  accent />
+        <KpiCard label="Proj. Clicks"  value={Math.round(displayTotals.clicks).toLocaleString()}         sub="across all categories"          />
+        <KpiCard label="Proj. Leads"   value={Math.round(displayTotals.leads).toLocaleString()}          sub={isMonthlyMode ? "from historical CVR" : `${effectiveAssumptions.lpConversionRate.toFixed(2)}% LP CVR`} />
+        <KpiCard label="Proj. CPL"     value={displayTotals.cpl > 0 ? `$${Math.round(displayTotals.cpl).toLocaleString()}` : "—"} sub="cost per lead"  />
+        <KpiCard label="Proj. SQL"     value={Math.round(displayTotals.sql).toLocaleString()}            sub={`${fa.sqlRate}% of leads`}    />
+        <KpiCard label="Proj. Deals"   value={Math.round(displayTotals.deals).toLocaleString()}          sub={`${effectiveAssumptions.closeRate}% close rate`} />
+        <KpiCard label="Proj. Revenue" value={displayTotals.revenue > 0 ? `$${Math.round(displayTotals.revenue).toLocaleString()}` : "—"} sub={`${displayTotals.budget > 0 && displayTotals.revenue > 0 ? (displayTotals.revenue / displayTotals.budget).toFixed(1) : "—"}× budget ROI`} />
       </div>
+
+      {/* Monthly Mode — Forecast by Category */}
+      {isMonthlyMode && monthlyResult && (
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <h3 className="text-sm font-semibold text-slate-800">Forecast by Category</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Budget distributed by historical cost share · CPC and CVR averaged from selected months
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-100">
+                  {["Category", "Budget", "Cost Dist", "CPC", "Clicks", "CVR", "Leads", "Revenue"].map((col) => (
+                    <th key={col} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {monthlyResult.byCategory.map((c, i) => (
+                  <tr key={c.category} className={`border-t border-slate-50 hover:bg-slate-50/80 transition-colors ${i % 2 !== 0 ? "bg-slate-50/30" : ""}`}>
+                    <td className="px-5 py-4 font-semibold text-slate-800 whitespace-nowrap capitalize">{c.category}</td>
+                    <td className="px-5 py-4 tabular-nums text-slate-700 whitespace-nowrap">${Math.round(c.budget).toLocaleString()}</td>
+                    <td className="px-5 py-4 tabular-nums text-slate-600 whitespace-nowrap">{(c.costDist * 100).toFixed(0)}%</td>
+                    <td className="px-5 py-4 tabular-nums text-slate-700 whitespace-nowrap">MYR {c.avgCpc.toFixed(2)}</td>
+                    <td className="px-5 py-4 tabular-nums text-slate-700 whitespace-nowrap">{Math.round(c.clicks).toLocaleString()}</td>
+                    <td className="px-5 py-4 tabular-nums text-slate-600 whitespace-nowrap">{(c.avgCvr * 100).toFixed(1)}%</td>
+                    <td className="px-5 py-4 tabular-nums whitespace-nowrap">
+                      <span className="font-semibold text-emerald-600">{Math.round(c.leads)}</span>
+                    </td>
+                    <td className="px-5 py-4 tabular-nums whitespace-nowrap">
+                      {c.revenue > 0
+                        ? <span className="font-semibold text-brand-600">${Math.round(c.revenue).toLocaleString()}</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-slate-200 bg-slate-50">
+                  <td className="px-5 py-3.5 text-xs font-bold uppercase tracking-wider text-slate-500">Total</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-slate-800">${Math.round(monthlyResult.totals.budget).toLocaleString()}</td>
+                  <td className="px-5 py-3.5 text-xs text-slate-400">100%</td>
+                  <td className="px-5 py-3.5 text-xs text-slate-400">—</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-slate-800">{Math.round(monthlyResult.totals.clicks).toLocaleString()}</td>
+                  <td className="px-5 py-3.5 text-xs text-slate-400">
+                    {monthlyResult.totals.clicks > 0
+                      ? `${(monthlyResult.totals.leads / monthlyResult.totals.clicks * 100).toFixed(1)}%`
+                      : "—"}
+                  </td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-emerald-600">{Math.round(monthlyResult.totals.leads)}</td>
+                  <td className="px-5 py-3.5 tabular-nums text-xs font-bold text-brand-600">
+                    {monthlyResult.totals.revenue > 0 ? `$${Math.round(monthlyResult.totals.revenue).toLocaleString()}` : "—"}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Zero-budget diagnostic */}
       {zeroBudgetDiagnosis && (
@@ -631,7 +836,7 @@ export default function ForecastPage() {
       )}
 
       {/* Scenario Outlook — Conservative / Balanced / Aggressive */}
-      {scenarioOutlook.length > 0 && (() => {
+      {!isMonthlyMode && scenarioOutlook.length > 0 && (() => {
         const TONE_STYLES = {
           red:     { row: "bg-red-50/30",     name: "text-red-700",      badge: "bg-red-50 text-red-600 border-red-200",         leads: "text-red-600",      revenue: "text-red-700"     },
           neutral: { row: "",                  name: "text-slate-800",    badge: "bg-slate-100 text-slate-600 border-slate-200",  leads: "text-slate-700",    revenue: "text-slate-800"   },
@@ -766,8 +971,8 @@ export default function ForecastPage() {
         </div>
       )}
 
-      {/* Charts 2 × 2 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Charts 2 × 2 — hidden in monthly mode */}
+      {!isMonthlyMode && <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         <ChartCard title="Budget by Country" subtitle="Proportional allocation — Buy 85% · Test 15%">
           {countryForecasts.length === 0
@@ -818,10 +1023,10 @@ export default function ForecastPage() {
             </div>
           )}
         </ChartCard>
-      </div>
+      </div>}
 
-      {/* Forecast Table by Country */}
-      <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+      {/* Forecast Table by Country — hidden in monthly mode */}
+      {!isMonthlyMode && <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h3 className="text-sm font-semibold text-slate-800">Forecast by Country</h3>
@@ -910,10 +1115,10 @@ export default function ForecastPage() {
             {scenario ? `Scenario: ${scenario.name} · ` : ""}Forecasts update automatically when you edit project assumptions.
           </span>
         </div>
-      </div>
+      </div>}
 
       {/* Campaign Summary */}
-      {campaignSummary.length > 0 && (
+      {!isMonthlyMode && campaignSummary.length > 0 && (
         <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
             <div>
