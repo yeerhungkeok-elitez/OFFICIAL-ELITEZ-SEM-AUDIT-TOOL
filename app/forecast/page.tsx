@@ -27,7 +27,8 @@ import {
 import { exportForecastCsv, exportCampaignSummaryCsv, type CampaignSummaryRow } from "@/lib/csvExport";
 import { applyScenario } from "@/lib/scenarioStore";
 import { useAppContext } from "@/context/AppContext";
-import { getLibraryKeywords, getSystemOverrides, buildWorkspaceKeywords } from "@/lib/keywordLibrary";
+import { getLibraryKeywords, getSystemOverrides, buildWorkspaceKeywords, type WorkspaceKeyword } from "@/lib/keywordLibrary";
+import { loadHistoricalKeywords } from "@/lib/historicalKeywords";
 import { getCampaigns, getAdGroups, CAMPAIGN_TYPE_LABELS, CAMPAIGN_TYPE_STYLES } from "@/lib/campaignStore";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -155,6 +156,20 @@ export default function ForecastPage() {
     setWsSysOvr(getSystemOverrides());
   }, [activeProject]);
 
+  const [historicalKws, setHistoricalKws] = useState<WorkspaceKeyword[]>([]);
+  const [kwsLoading,    setKwsLoading]    = useState(false);
+
+  useEffect(() => {
+    if (activeProject?.keywordSource !== "historical") {
+      setHistoricalKws([]);
+      return;
+    }
+    setKwsLoading(true);
+    loadHistoricalKeywords(activeProject.id)
+      .then(setHistoricalKws)
+      .finally(() => setKwsLoading(false));
+  }, [activeProject?.id, activeProject?.keywordSource]);
+
   // Effective assumptions with scenario multipliers applied
   const effectiveAssumptions = useMemo(
     () => scenario ? applyScenario(assumptions, scenario) : assumptions,
@@ -185,13 +200,17 @@ export default function ForecastPage() {
 
   // Unified forecast keywords: system + library, filtered to all target countries
   const inScopeKws = useMemo(() => {
-    const cpcMult = scenario?.cpcMultiplier ?? 1.0;
-    const ws = buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
+    const cpcMult   = scenario?.cpcMultiplier ?? 1.0;
     const targetSet = new Set(effectiveAssumptions.targetCountries);
+    if (activeProject?.keywordSource === "historical") {
+      return historicalKws
+        .map((k) => ({ ...k, suggestedCpc: k.suggestedCpc * cpcMult, action: k.effectiveAction })) as never[];
+    }
+    const ws = buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
     return ws
       .filter((kw) => targetSet.has(kw.country) && kw.effectiveAction !== "No")
       .map((kw) => ({ ...kw, action: kw.effectiveAction })) as never[];
-  }, [scenarioKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries, scenario]);
+  }, [activeProject?.keywordSource, historicalKws, scenarioKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries, scenario]);
 
   const budgetMap = useMemo(
     () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibration ?? undefined),
@@ -270,11 +289,13 @@ export default function ForecastPage() {
     };
 
     const cpcMult = scenario?.cpcMultiplier ?? 1.0;
-    const workspaceKws = buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
     const targetSet = new Set(effectiveAssumptions.targetCountries);
-    const inScope = workspaceKws.filter((k) =>
-      targetSet.has(k.country) && k.effectiveAction !== "No"
-    );
+    const workspaceKws = activeProject?.keywordSource === "historical"
+      ? historicalKws.map((k) => ({ ...k, suggestedCpc: k.suggestedCpc * cpcMult }))
+      : buildWorkspaceKeywords(scenarioKws as never, wsSysOvr, wsLibKws, cpcMult, wsCampaigns, wsAdGroups);
+    const inScope = activeProject?.keywordSource === "historical"
+      ? workspaceKws
+      : workspaceKws.filter((k) => targetSet.has(k.country) && k.effectiveAction !== "No");
     if (inScope.length === 0) return [];
 
     const bMap     = allocateBudgets(inScope as never, effectiveAssumptions.monthlyBudget, calibration ?? undefined);
@@ -327,16 +348,20 @@ export default function ForecastPage() {
       });
     }
     return rows.sort((a, b) => b.budget - a.budget);
-  }, [wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa, calibration]);
+  }, [activeProject?.keywordSource, historicalKws, wsCampaigns, wsAdGroups, wsLibKws, wsSysOvr, inScopeCountries, effectiveAssumptions, scenario, fa, calibration]);
 
   // Base keywords (no active-scenario CPC adjustment) for clean scenario comparison
   const baseInScopeKws = useMemo(() => {
-    const ws = buildWorkspaceKeywords(KEYWORDS as never, wsSysOvr, wsLibKws, 1.0, wsCampaigns, wsAdGroups);
     const targetSet = new Set(effectiveAssumptions.targetCountries);
+    if (activeProject?.keywordSource === "historical") {
+      return historicalKws
+        .map((kw) => ({ ...kw, action: kw.effectiveAction })) as never[];
+    }
+    const ws = buildWorkspaceKeywords(KEYWORDS as never, wsSysOvr, wsLibKws, 1.0, wsCampaigns, wsAdGroups);
     return ws
       .filter((kw) => targetSet.has(kw.country) && kw.effectiveAction !== "No")
       .map((kw) => ({ ...kw, action: kw.effectiveAction })) as never[];
-  }, [wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries]);
+  }, [activeProject?.keywordSource, historicalKws, wsSysOvr, wsLibKws, wsCampaigns, wsAdGroups, effectiveAssumptions.targetCountries]);
 
   const baseBudgetMap = useMemo(
     () => allocateBudgets(baseInScopeKws, assumptions.monthlyBudget, calibration ?? undefined),
@@ -381,7 +406,7 @@ export default function ForecastPage() {
     }
   }
 
-  if (!mounted) return null;
+  if (!mounted || kwsLoading) return null;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">

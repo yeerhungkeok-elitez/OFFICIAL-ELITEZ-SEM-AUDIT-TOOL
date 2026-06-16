@@ -106,7 +106,8 @@ export async function loadHistoricalKeywords(projectId: string): Promise<Workspa
       intent,
       category,
       campaignGroup:           group.derivedCategory === "highIntent" ? "highIntent" :
-                               group.derivedCategory === "generic"    ? "generic"    : undefined,
+                               group.derivedCategory === "competitor" ? "competitor" :
+                               group.derivedCategory === "brand"      ? "brand"      : "generic",
       country:                 group.firstCountry,
       isLibrary:               false,
       exclude:                 false,
