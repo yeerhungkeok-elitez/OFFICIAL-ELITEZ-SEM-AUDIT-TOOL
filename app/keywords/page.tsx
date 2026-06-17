@@ -3315,11 +3315,24 @@ export default function KeywordsPage() {
   const [showAllCountries,  setShowAllCountries]  = useState(false);
   const [starterGenerated,  setStarterGenerated]  = useState(false);
 
-  // ── Simplified input state ─────────────────────────────────────────────────
-  const [serviceInput,  setServiceInput]  = useState("");
-  const [brandInput,    setBrandInput]    = useState("");
-  const [competitorInput, setCompetitorInput] = useState("");
+  // ── Simplified input state (persisted across navigation) ──────────────────
+  const [serviceInput,    setServiceInput]    = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("kw_step1_service") ?? "";
+  });
+  const [brandInput,      setBrandInput]      = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("kw_step1_brand") ?? "";
+  });
+  const [competitorInput, setCompetitorInput] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("kw_step1_competitors") ?? "";
+  });
   const [showAdvanced,  setShowAdvanced]  = useState(false);
+
+  useEffect(() => { localStorage.setItem("kw_step1_service",     serviceInput);    }, [serviceInput]);
+  useEffect(() => { localStorage.setItem("kw_step1_brand",       brandInput);      }, [brandInput]);
+  useEffect(() => { localStorage.setItem("kw_step1_competitors", competitorInput); }, [competitorInput]);
 
   // ── Effective assumptions (with scenario applied) ──────────────────────────
   const effectiveAssumptions = useMemo(
