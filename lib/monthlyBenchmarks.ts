@@ -20,6 +20,9 @@ export const FULL_TRUST_CLICKS = 200;
 // Re-normalised over however many months are actually present (1, 2, or 3+).
 const RECENCY_WEIGHTS = [0.5, 0.33, 0.17];
 
+// Month abbreviations used by loadMonthlyOptions to format period labels.
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] as const;
+
 export interface MonthlyPoint {
   periodMonth: string;   // yyyy-mm-01
   clicks:      number;
@@ -111,17 +114,9 @@ export async function recomputeMonthlyBenchmarks(projectId: string): Promise<voi
   }));
 
   if (upserts.length) {
-    // Delete all existing rows for this project first so stale zeros or renamed
-    // category rows (e.g. old "service" rows) can never survive a recompute.
-    const { error: delErr } = await supabase
-      .from("semaudit_monthly_benchmarks")
-      .delete()
-      .eq("project_id", projectId);
-    if (delErr) throw new Error(`Monthly delete failed: ${delErr.message}`);
-
     const { error: upErr } = await supabase
       .from("semaudit_monthly_benchmarks")
-      .insert(upserts);
+      .upsert(upserts, { onConflict: "project_id,category,period_month" });
     if (upErr) throw new Error(`Monthly write failed: ${upErr.message}`);
   }
 }
@@ -268,20 +263,25 @@ export async function loadMonthlyOptions(projectId: string): Promise<MonthOption
     byMonth.get(month)!.push(r);
   }
 
-  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
   return Array.from(byMonth.entries()).map(([periodMonth, rows]) => {
     const totalBudget = rows.reduce((s, r) => s + (Number(r.cost)        || 0), 0);
     const totalClicks = rows.reduce((s, r) => s + (Number(r.clicks)      || 0), 0);
     const totalLeads  = rows.reduce((s, r) => s + (Number(r.conversions) || 0), 0);
-    const [year, mo]  = periodMonth.split("-");
-    const label       = `${MONTH_NAMES[parseInt(mo, 10) - 1]} ${year}`;
+    // period_month is always "yyyy-mm-01"; use slice to avoid silent undefined
+    // if the format ever changes (split("-") would drop the day silently).
+    const year  = periodMonth.slice(0, 4);
+    const mo    = periodMonth.slice(5, 7);
+    const label = `${MONTH_NAMES[parseInt(mo, 10) - 1]} ${year}`;
 
     const byCategory: MonthCategoryRow[] = rows.map((r) => ({
       category:    String(r.category),
       cost:        Number(r.cost)        || 0,
       clicks:      Number(r.clicks)      || 0,
       conversions: Number(r.conversions) || 0,
+      // cpc here is the stored per-row value from the DB (cost/clicks per category).
+      // MonthOption.avgCpc below is cost-weighted across all categories (totalBudget/totalClicks)
+      // and will differ slightly — use avgCpc for month-level comparisons, byCategory[n].cpc
+      // for per-category work in averageMonthData.
       cpc:         Number(r.cpc)         || 0,
       cvr:         Number(r.cvr)         || 0,
     }));

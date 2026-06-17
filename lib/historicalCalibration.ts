@@ -116,9 +116,15 @@ export async function recomputeBenchmarks(projectId: string): Promise<CategoryBe
   }
 
   if (upserts.length) {
+    const { error: delErr } = await supabase
+      .from("semaudit_calibration_benchmarks")
+      .delete()
+      .eq("project_id", projectId);
+    if (delErr) throw new Error(`Calibration delete failed: ${delErr.message}`);
+
     const { error: upErr } = await supabase
       .from("semaudit_calibration_benchmarks")
-      .upsert(upserts, { onConflict: "project_id,category" });
+      .insert(upserts);
     if (upErr) throw new Error(`Calibration write failed: ${upErr.message}`);
   }
 

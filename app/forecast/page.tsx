@@ -182,10 +182,22 @@ export default function ForecastPage() {
     if (!activeProject) { setAvailableMonths([]); setSelectedMonths([]); return; }
     loadMonthlyOptions(activeProject.id).then((months) => {
       setAvailableMonths(months);
-      // Auto-select the most recent month
-      setSelectedMonths(months.length > 0 ? [months[months.length - 1].periodMonth] : []);
+      if (months.length === 0) { setSelectedMonths([]); return; }
+      // Restore saved selection; fall back to most recent month
+      const saved = (() => {
+        try { return JSON.parse(localStorage.getItem(`forecastBasis:${activeProject.id}`) ?? "null") as string[] | null; }
+        catch { return null; }
+      })();
+      const valid = (saved ?? []).filter((m) => months.some((mo) => mo.periodMonth === m));
+      setSelectedMonths(valid.length > 0 ? valid : [months[months.length - 1].periodMonth]);
     });
   }, [activeProject?.id]);
+
+  // Persist selection so it survives navigation
+  useEffect(() => {
+    if (!activeProject || selectedMonths.length === 0) return;
+    localStorage.setItem(`forecastBasis:${activeProject.id}`, JSON.stringify(selectedMonths));
+  }, [activeProject?.id, selectedMonths]);
 
   // Effective assumptions with scenario multipliers applied
   const effectiveAssumptions = useMemo(

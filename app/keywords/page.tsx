@@ -95,6 +95,8 @@ import {
   NEGATIVE_PACKS,
 } from "@/lib/negativeKeywordStore";
 import { exportKeywordsCsv } from "@/lib/csvExport";
+import { loadMonthlyOptions, type MonthOption } from "@/lib/monthlyBenchmarks";
+import { averageMonthData, computeMonthlyForecast } from "@/lib/monthlyForecastEngine";
 
 // ─── Badge style maps ─────────────────────────────────────────────────────────
 
@@ -3288,6 +3290,12 @@ export default function KeywordsPage() {
     ));
   }, [activeProject]);
 
+  const [availableMonths, setAvailableMonths] = useState<MonthOption[]>([]);
+  useEffect(() => {
+    if (!activeProject) { setAvailableMonths([]); return; }
+    loadMonthlyOptions(activeProject.id).then(setAvailableMonths);
+  }, [activeProject?.id]);
+
   // Pre-fill simplified inputs from project (only on first load / project change, never overwrite user edits)
   useEffect(() => {
     if (activeProject) {
@@ -3436,9 +3444,67 @@ export default function KeywordsPage() {
     });
   }, [countryFilteredKws, enrichedForecast, projectContext]);
 
-  // 7. UI filters
+  // 7. Monthly forecast — mirrors Forecast page logic (latest month, same default)
+  const monthlyAveraged = useMemo(() => {
+    if (availableMonths.length === 0) return [];
+    return averageMonthData([availableMonths[availableMonths.length - 1]]);
+  }, [availableMonths]);
+
+  const monthlyResult = useMemo(() => {
+    if (monthlyAveraged.length === 0) return null;
+    return computeMonthlyForecast(monthlyAveraged, effectiveAssumptions.monthlyBudget, {
+      sqlRate:     fa.sqlRate,
+      closeRate:   effectiveAssumptions.closeRate,
+      avgDealSize: effectiveAssumptions.avgDealSize,
+    });
+  }, [monthlyAveraged, effectiveAssumptions.monthlyBudget, effectiveAssumptions.closeRate, effectiveAssumptions.avgDealSize, fa.sqlRate]);
+
+  // 8. Scale per-keyword leads so category totals match the Forecast page
+  const scaledEnrichedAll = useMemo<EnrichedWorkspaceKeyword[]>(() => {
+    if (!monthlyResult) return enrichedAll;
+
+    // Map keyword → monthly category (brand/generic/highIntent/competitor)
+    const BUCKET_NORMALIZE: Record<string, string> = {
+      pricing: "generic", local: "generic", niche: "generic",
+    };
+    function kwToMonthlyCategory(kw: EnrichedWorkspaceKeyword): string {
+      const group = (kw as { campaignGroup?: string }).campaignGroup;
+      if (group) return BUCKET_NORMALIZE[group] ?? group;
+      for (const b of BUCKETS) {
+        if ((b.categories as string[]).includes(kw.category)) return b.id;
+      }
+      return "generic";
+    }
+
+    // Sum raw estimated leads per monthly category
+    const rawByCategory = new Map<string, number>();
+    for (const kw of enrichedAll) {
+      const cat = kwToMonthlyCategory(kw);
+      rawByCategory.set(cat, (rawByCategory.get(cat) ?? 0) + kw.estimatedLeads);
+    }
+
+    // Build target leads map from monthly result
+    const targets = new Map<string, number>(
+      monthlyResult.byCategory.map((c) => [c.category, c.leads])
+    );
+
+    return enrichedAll.map((kw) => {
+      const cat      = kwToMonthlyCategory(kw);
+      const rawTotal = rawByCategory.get(cat) ?? 0;
+      const target   = targets.get(cat);
+      if (target === undefined) return kw;                                    // no historical data for this category
+      if (target === 0) return { ...kw, estimatedLeads: 0, estimatedCpl: 0 }; // historical data shows 0 leads
+      if (rawTotal === 0 || kw.estimatedLeads === 0) return kw;
+      const scale    = target / rawTotal;
+      const newLeads = Math.round(kw.estimatedLeads * scale);
+      const newCpl   = newLeads > 0 ? Math.round(kw.suggestedMonthlyBudget / newLeads) : 0;
+      return { ...kw, estimatedLeads: newLeads, estimatedCpl: newCpl };
+    });
+  }, [enrichedAll, monthlyResult]);
+
+  // 9. UI filters
   const filtered = useMemo(() => {
-    return enrichedAll.filter((kw) => {
+    return scaledEnrichedAll.filter((kw) => {
       if (filterCountry  && kw.country         !== filterCountry)                          return false;
       if (filterIntent   && kw.intent          !== filterIntent)                           return false;
       if (filterMatchType && kw.matchType      !== filterMatchType)                        return false;
@@ -3448,10 +3514,10 @@ export default function KeywordsPage() {
       if (search         && !kw.keyword.toLowerCase().includes(search.toLowerCase()))      return false;
       return true;
     });
-  }, [enrichedAll, filterCountry, filterIntent, filterMatchType, filterAction, filterSource, filterCategory, search]);
+  }, [scaledEnrichedAll, filterCountry, filterIntent, filterMatchType, filterAction, filterSource, filterCategory, search]);
 
   // ── Summary stats ──────────────────────────────────────────────────────────
-  const buyKws        = useMemo(() => enrichedAll.filter((k) => k.effectiveAction === "Buy"), [enrichedAll]);
+  const buyKws        = useMemo(() => scaledEnrichedAll.filter((k) => k.effectiveAction === "Buy"), [scaledEnrichedAll]);
   const totalBuyCount = buyKws.length;
   const totalBudget   = buyKws.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
   const totalLeads    = buyKws.reduce((s, k) => s + k.estimatedLeads, 0);
@@ -3974,7 +4040,7 @@ export default function KeywordsPage() {
         </div>
         <div className="flex gap-2 self-start shrink-0">
           <button
-            onClick={() => exportKeywordsCsv(enrichedAll, campaigns, adGroups, negativeKws, assumptions.projectName)}
+            onClick={() => exportKeywordsCsv(scaledEnrichedAll, campaigns, adGroups, negativeKws, assumptions.projectName)}
             title="Export all keywords to CSV"
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
           >
@@ -4135,7 +4201,7 @@ export default function KeywordsPage() {
           />
 
           {BUCKETS.map((bucket) => {
-            const bucketKws = enrichedAll.filter(
+            const bucketKws = scaledEnrichedAll.filter(
               (k) => k.isLibrary && (bucket.categories as string[]).includes(k.category)
             );
             return (
@@ -4590,7 +4656,7 @@ export default function KeywordsPage() {
           ) : (
             <>
               {campaigns.map((campaign) => {
-                const campaignKws = enrichedAll.filter((k) => k.campaignId === campaign.id);
+                const campaignKws = scaledEnrichedAll.filter((k) => k.campaignId === campaign.id);
                 return (
                   <CampaignCard
                     key={campaign.id}
@@ -4611,7 +4677,7 @@ export default function KeywordsPage() {
               })}
               {/* Unassigned keywords */}
               {(() => {
-                const unassigned = enrichedAll.filter((k) => !k.campaignId);
+                const unassigned = scaledEnrichedAll.filter((k) => !k.campaignId);
                 if (unassigned.length === 0) return null;
                 return (
                   <div className="bg-white rounded-xl border border-slate-200">
