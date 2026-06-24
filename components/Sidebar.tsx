@@ -14,16 +14,18 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
+  Layers,
 } from "lucide-react";
 
 const navItems = [
-  { label: "Dashboard",   href: "/",            icon: LayoutDashboard },
-  { label: "Projects",    href: "/projects",    icon: FolderOpen },
-  { label: "Keywords",    href: "/keywords",    icon: Tag },
-  { label: "Forecast",    href: "/forecast",    icon: TrendingUp },
-  { label: "Reports",     href: "/reports",     icon: FileText },
-  { label: "Snapshots",   href: "/snapshots",   icon: BookmarkCheck },
-  { label: "Assumptions", href: "/assumptions", icon: SlidersHorizontal },
+  { label: "Dashboard",   href: "/",             icon: LayoutDashboard },
+  { label: "Projects",    href: "/projects",     icon: FolderOpen },
+  { label: "Keywords",    href: "/keywords",     icon: Tag },
+  { label: "Categories",  href: "/calibration",  icon: Layers },
+  { label: "Forecast",    href: "/forecast",     icon: TrendingUp },
+  { label: "Reports",     href: "/reports",      icon: FileText },
+  { label: "Snapshots",   href: "/snapshots",    icon: BookmarkCheck },
+  { label: "Assumptions", href: "/assumptions",  icon: SlidersHorizontal },
 ];
 
 export default function Sidebar() {

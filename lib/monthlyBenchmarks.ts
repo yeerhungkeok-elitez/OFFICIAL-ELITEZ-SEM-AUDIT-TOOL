@@ -20,6 +20,9 @@ export const FULL_TRUST_CLICKS = 200;
 // Re-normalised over however many months are actually present (1, 2, or 3+).
 const RECENCY_WEIGHTS = [0.5, 0.33, 0.17];
 
+// Month abbreviations used by loadMonthlyOptions to format period labels.
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] as const;
+
 export interface MonthlyPoint {
   periodMonth: string;   // yyyy-mm-01
   clicks:      number;
@@ -43,6 +46,26 @@ export interface CategoryForecast {
   trend:       "up" | "down" | "flat";
   confidence:  "High" | "Medium" | "Low";
   basis:       string;                // human-readable explanation for the UI/audit
+}
+
+export interface MonthCategoryRow {
+  category:    string;
+  cost:        number;
+  clicks:      number;
+  conversions: number;
+  cpc:         number;
+  cvr:         number;
+}
+
+export interface MonthOption {
+  periodMonth: string;          // "2026-03-01"
+  label:       string;          // "Mar 2026"
+  totalBudget: number;          // sum of cost across all categories for this month
+  totalClicks: number;
+  totalLeads:  number;          // sum of conversions
+  avgCpc:      number;          // totalBudget / totalClicks
+  avgCvr:      number;          // totalLeads / totalClicks
+  byCategory:  MonthCategoryRow[];
 }
 
 // ─── Rollup: write semaudit_monthly_benchmarks from raw rows ──────────────────
@@ -218,4 +241,60 @@ export async function loadRecentCpcByCategory(
     if (cpc > 0) { map[r.category] = cpc; seen.add(r.category); }
   }
   return Object.keys(map).length ? map : null;
+}
+
+/**
+ * Load all available months for a project from semaudit_monthly_benchmarks,
+ * sorted oldest → newest, with per-month totals and per-category rows.
+ */
+export async function loadMonthlyOptions(projectId: string): Promise<MonthOption[]> {
+  const { data, error } = await supabase
+    .from("semaudit_monthly_benchmarks")
+    .select("category, period_month, clicks, cost, conversions, cpc, cvr")
+    .eq("project_id", projectId)
+    .order("period_month", { ascending: true });
+
+  if (error || !data || data.length === 0) return [];
+
+  const byMonth = new Map<string, typeof data>();
+  for (const r of data) {
+    const month = String(r.period_month);
+    if (!byMonth.has(month)) byMonth.set(month, []);
+    byMonth.get(month)!.push(r);
+  }
+
+  return Array.from(byMonth.entries()).map(([periodMonth, rows]) => {
+    const totalBudget = rows.reduce((s, r) => s + (Number(r.cost)        || 0), 0);
+    const totalClicks = rows.reduce((s, r) => s + (Number(r.clicks)      || 0), 0);
+    const totalLeads  = rows.reduce((s, r) => s + (Number(r.conversions) || 0), 0);
+    // period_month is always "yyyy-mm-01"; use slice to avoid silent undefined
+    // if the format ever changes (split("-") would drop the day silently).
+    const year  = periodMonth.slice(0, 4);
+    const mo    = periodMonth.slice(5, 7);
+    const label = `${MONTH_NAMES[parseInt(mo, 10) - 1]} ${year}`;
+
+    const byCategory: MonthCategoryRow[] = rows.map((r) => ({
+      category:    String(r.category),
+      cost:        Number(r.cost)        || 0,
+      clicks:      Number(r.clicks)      || 0,
+      conversions: Number(r.conversions) || 0,
+      // cpc here is the stored per-row value from the DB (cost/clicks per category).
+      // MonthOption.avgCpc below is cost-weighted across all categories (totalBudget/totalClicks)
+      // and will differ slightly — use avgCpc for month-level comparisons, byCategory[n].cpc
+      // for per-category work in averageMonthData.
+      cpc:         Number(r.cpc)         || 0,
+      cvr:         Number(r.cvr)         || 0,
+    }));
+
+    return {
+      periodMonth,
+      label,
+      totalBudget,
+      totalClicks,
+      totalLeads,
+      avgCpc: totalClicks > 0 ? totalBudget / totalClicks : 0,
+      avgCvr: totalClicks > 0 ? totalLeads  / totalClicks : 0,
+      byCategory,
+    };
+  });
 }

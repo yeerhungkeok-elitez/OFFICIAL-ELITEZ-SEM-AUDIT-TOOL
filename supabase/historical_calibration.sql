@@ -67,3 +67,28 @@ create index if not exists semaudit_cb_project_idx on semaudit_calibration_bench
 
 alter table semaudit_historical_keyword_performance disable row level security;
 alter table semaudit_calibration_benchmarks         disable row level security;
+
+-- ── Phase 1 additions: CPC + CTR calibration columns ─────────────────────────
+alter table semaudit_calibration_benchmarks
+  add column if not exists total_impressions numeric not null default 0,
+  add column if not exists actual_ctr        numeric not null default 0,  -- clicks / impressions
+  add column if not exists actual_cpc        numeric not null default 0;  -- cost / clicks
+
+-- ── Monthly benchmarks (missing table — writes were silently failing) ─────────
+create table if not exists semaudit_monthly_benchmarks (
+  id           uuid        primary key default gen_random_uuid(),
+  project_id   uuid        not null,
+  category     text        not null,
+  period_month date        not null,
+  clicks       numeric     not null default 0,
+  impressions  numeric     not null default 0,
+  cost         numeric     not null default 0,
+  conversions  numeric     not null default 0,
+  cpc          numeric     not null default 0,
+  cvr          numeric     not null default 0,
+  confidence   numeric     not null default 0,
+  updated_at   timestamptz not null default now(),
+  unique (project_id, category, period_month)
+);
+create index if not exists semaudit_mb_project_idx on semaudit_monthly_benchmarks(project_id);
+alter table semaudit_monthly_benchmarks disable row level security;

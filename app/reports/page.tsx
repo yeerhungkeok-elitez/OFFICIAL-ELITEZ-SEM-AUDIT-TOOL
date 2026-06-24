@@ -19,6 +19,7 @@ import {
   type CountryForecast,
 } from "@/lib/keywordEngine";
 import { allocateBudgets, enrichKeyword, buildCountryForecasts } from "@/lib/forecastEngine";
+import { type CalibrationMap } from "@/lib/historicalCalibration";
 import { buildMatchTypeModifiers } from "@/lib/forecastAssumptionsStore";
 import {
   getForecastAssumptions,
@@ -149,7 +150,7 @@ function Badge({ label, className }: { label: string; className: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
-  const { activeProject, activeScenario, calibratedCvr } = useAppContext();
+  const { activeProject, activeScenario, calibration } = useAppContext();
   const scenario     = activeScenario;
   const isProjectSet = activeProject !== null;
   const assumptions: ProjectAssumptions = useMemo(
@@ -193,8 +194,8 @@ export default function ReportsPage() {
   );
 
   const budgetMap = useMemo(
-    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr ?? undefined),
-    [inScopeKws, effectiveAssumptions.monthlyBudget, calibratedCvr]
+    () => allocateBudgets(inScopeKws, effectiveAssumptions.monthlyBudget, calibration ?? undefined),
+    [inScopeKws, effectiveAssumptions.monthlyBudget, calibration]
   );
 
   const enrichedKws = useMemo(
@@ -203,9 +204,9 @@ export default function ReportsPage() {
       brandCvrUplift:          fa.brandCvrUplift,
       competitorCvrDiscount:   fa.competitorCvrDiscount,
       cpcMultiplier:           fa.cpcMultiplier,
-      calibratedCvrByCategory: calibratedCvr ?? undefined,
+      calibration: calibration ?? undefined,
     })),
-    [inScopeKws, budgetMap, effectiveAssumptions, fa, calibratedCvr]
+    [inScopeKws, budgetMap, effectiveAssumptions, fa, calibration]
   );
 
   // Raw totals (first pass for priority scoring)
@@ -216,7 +217,7 @@ export default function ReportsPage() {
   }, [enrichedKws]);
 
   const countryForecasts = useMemo(
-    () => buildCountryForecasts(inScopeKws, budgetMap, effectiveAssumptions, rawTotals.revenue, rawTotals.leads, fa.sqlRate / 100, calibratedCvr ?? undefined)
+    () => buildCountryForecasts(inScopeKws, budgetMap, effectiveAssumptions, rawTotals.revenue, rawTotals.leads, fa.sqlRate / 100, calibration ?? undefined)
           .sort((a, b) => b.revenue - a.revenue),
     [inScopeKws, budgetMap, effectiveAssumptions, rawTotals, fa.sqlRate]
   );

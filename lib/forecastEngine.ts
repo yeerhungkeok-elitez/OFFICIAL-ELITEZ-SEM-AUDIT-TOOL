@@ -8,7 +8,7 @@
 import type { ProjectAssumptions } from "@/lib/projectStore";
 import type { Keyword, EnrichedKeyword, CountryForecast, PriorityLevel, MatchType, Intent } from "@/lib/keywordEngine";
 import { SQL_RATE } from "@/lib/keywordEngine";
-import { toPerfCategory } from "@/lib/historicalCalibration";
+import { toPerfCategory, type CalibrationMap, type CategoryCalibration } from "@/lib/historicalCalibration";
 
 // ─── Enrich options ───────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ export interface EnrichOpts {
   impShareMultiplier?: number;
   // Data-anchored CVR per perf category (brand/service/competitor/other).
   // When present, overrides the hardcoded category priors in computeEffectiveCvr.
-  calibratedCvrByCategory?: Record<string, number>;
+  calibration?: CalibrationMap;
 }
 
 export type ConfidenceLevel = "High" | "Medium" | "Low";
@@ -98,8 +98,8 @@ const CVR_MIDPOINT_BY_INTENT: Record<Intent, number> = {
 const OLD_PRIOR_CVR_BY_PERF_CAT: Record<string, number> = {
   brand:      0.15,
   competitor: 0.05,
-  service:    0.02,
-  other:      0.02,
+  generic:    0.02,
+  highIntent: 0.06,
 };
 
 // ─── Match type forecast modifiers ───────────────────────────────────────────
@@ -130,6 +130,15 @@ function getCategory(kw: Keyword): string {
   return (kw as { campaignGroup?: string; category?: string }).campaignGroup
       ?? (kw as { category?: string }).category
       ?? "";
+}
+
+function blend(actual: number, prior: number, w: number): number {
+  return w * actual + (1 - w) * prior;
+}
+
+function getCalib(calib: CalibrationMap | undefined, kw: Keyword): CategoryCalibration | undefined {
+  if (!calib) return undefined;
+  return calib[toPerfCategory(getCategory(kw), kw.intent)];
 }
 
 /**
@@ -172,12 +181,20 @@ export function computeEffectiveCpc(
   resolvedMatchType: MatchType,
   matchMods: Record<MatchType, { cpcFactor: number; cvrFactor: number; label?: string }>,
   cpcMultiplier: number,
+  calib?: CalibrationMap,
 ): number {
   const pressureScore   = kw.competitorPressureScore ?? 50;
   const pressurePremium = 1 + Math.max(0, (pressureScore - 50) / 200);
   const intentMult      = INTENT_CPC_MULT[kw.intent] ?? 1.0;
   const matchMod        = matchMods[resolvedMatchType] ?? matchMods.Phrase;
-  return kw.suggestedCpc * pressurePremium * intentMult * matchMod.cpcFactor * cpcMultiplier;
+
+  let base = kw.suggestedCpc * pressurePremium * intentMult;
+
+  const c = getCalib(calib, kw);
+  if (c && c.actualCpc > 0 && c.cpcConfidence > 0) {
+    base = blend(c.actualCpc, base, c.cpcConfidence);
+  }
+  return base * matchMod.cpcFactor * cpcMultiplier;
 }
 
 /**
@@ -193,31 +210,20 @@ export function computeEffectiveCvr(
   kw: Keyword,
   lpConversionRate: number,
   matchMod: { cvrFactor: number },
-  calibratedCvrByCategory?: Record<string, number>,
+  calib?: CalibrationMap,
 ): number {
-  const category  = getCategory(kw);
-
-  // ── Calibration override ──────────────────────────────────────────────────
-  // If the project has historical actuals (passed in as a blended CVR map keyed
-  // by perf category), use the data-anchored value as the starting point instead
-  // of the hardcoded prior. This is what corrects the brand-vs-service inversion.
-  // The map already blends actuals with priors by confidence, so it is NOT
-  // re-clamped to the static benchmark range (which encodes the wrong priors).
-  if (calibratedCvrByCategory) {
-    const perfCat = toPerfCategory(category, kw.intent);
-    const blended = calibratedCvrByCategory[perfCat];
-    if (blended != null && blended > 0) {
-      const lpScale = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
-      const raw     = blended * lpScale * matchMod.cvrFactor;
-      return Math.max(0.002, Math.min(0.30, raw));
-    }
+  const c = getCalib(calib, kw);
+  if (c && c.blendedCvr > 0) {
+    const lpScale = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
+    const raw     = c.blendedCvr * lpScale * matchMod.cvrFactor;
+    return Math.max(0.002, Math.min(0.30, raw));
   }
-
-  // ── Prior-based fallback (no calibration data) ────────────────────────────
-  const midpoint  = CVR_MIDPOINT[category] ?? CVR_MIDPOINT_BY_INTENT[kw.intent] ?? 0.03;
-  const lpScale   = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
-  const range     = getCvrRange(kw);
-  const raw       = midpoint * lpScale * matchMod.cvrFactor;
+  // ── prior-based fallback (unchanged) ──
+  const category = getCategory(kw);
+  const midpoint = CVR_MIDPOINT[category] ?? CVR_MIDPOINT_BY_INTENT[kw.intent] ?? 0.03;
+  const lpScale  = Math.min(2.0, Math.max(0.5, lpConversionRate / LP_CVR_BASELINE));
+  const range    = getCvrRange(kw);
+  const raw      = midpoint * lpScale * matchMod.cvrFactor;
   return Math.max(range.min, Math.min(range.max, raw));
 }
 
@@ -234,7 +240,7 @@ export function getConfidenceLevel(kw: Keyword): ConfidenceLevel {
 export function allocateBudgets(
   inScope: Keyword[],
   totalBudget: number,
-  calibratedCvrByCategory?: Record<string, number>,
+  calib?: CalibrationMap,
 ): Map<number, number> {
   const buyKws  = inScope.filter((k) => k.action === "Buy");
   const testKws = inScope.filter((k) => k.action === "Test");
@@ -245,17 +251,18 @@ export function allocateBudgets(
   const buyRatio  = hasBuy  ? (hasTest ? 0.85 : 1.0) : 0;
   const testRatio = hasTest ? (hasBuy  ? 0.15 : 1.0) : 0;
 
-  // When calibration data is present, scale each keyword's opportunity score by
-  // (calibratedCVR / oldPriorCVR) so that keywords the data shows as high-CVR
-  // (service/competitor) attract proportionally more budget than brand, whose
-  // prior was 15% but actual is ~2.6%.
   function adjScore(kw: Keyword): number {
-    if (!calibratedCvrByCategory) return kw.opportunityScore;
+    if (!calib) return kw.opportunityScore;
+    const c = getCalib(calib, kw);
+    if (!c || c.blendedCvr <= 0 || c.actualCpc <= 0) return kw.opportunityScore;
+
     const perfCat  = toPerfCategory(getCategory(kw), kw.intent);
-    const calib    = calibratedCvrByCategory[perfCat];
-    const oldPrior = OLD_PRIOR_CVR_BY_PERF_CAT[perfCat] ?? 0.03;
-    if (!calib || calib <= 0) return kw.opportunityScore;
-    const ratio = Math.min(5, Math.max(0.1, calib / oldPrior));
+    const priorCvr = OLD_PRIOR_CVR_BY_PERF_CAT[perfCat] ?? 0.03;
+    const priorCpc = kw.suggestedCpc > 0 ? kw.suggestedCpc : c.actualCpc;
+
+    const calibEff = c.blendedCvr / c.actualCpc;
+    const priorEff = priorCvr     / priorCpc;
+    const ratio    = Math.min(5, Math.max(0.1, priorEff > 0 ? calibEff / priorEff : 1));
     return kw.opportunityScore * ratio;
   }
 
@@ -292,7 +299,7 @@ export function enrichKeyword(
   const matchMod  = modTable[resolvedMatchType] ?? modTable.Phrase;
 
   const cpcMultiplier = opts?.cpcMultiplier ?? 1.0;
-  const effectiveCpc  = computeEffectiveCpc(kw, resolvedMatchType, modTable, cpcMultiplier);
+  const effectiveCpc  = computeEffectiveCpc(kw, resolvedMatchType, modTable, cpcMultiplier, opts?.calibration);
 
   const pressureScore = kw.competitorPressureScore ?? 50;
   const position      = estimatePosition(pressureScore);
@@ -306,9 +313,14 @@ export function enrichKeyword(
   const impShare    = Math.min(computeImpressionShare(pressureScore) * isMultiplier, 1.0);
   const impressions = kw.monthlySearches * impShare;  // float — no rounding
 
-  // ── Step 2: CTR from position curve — no secondary caps (float) ──────────
+  // ── Step 2: CTR — position curve, blended with historical actual when available
   const baseCtr = CTR_BY_POSITION[position] ?? 0.025;
-  const ctr     = baseCtr * ctrMult;                  // float — no floor, no cap
+  let ctr = baseCtr;
+  const cCal = getCalib(opts?.calibration, kw);
+  if (cCal && cCal.actualCtr > 0 && cCal.ctrConfidence > 0) {
+    ctr = blend(cCal.actualCtr, baseCtr, cCal.ctrConfidence);
+  }
+  ctr = ctr * ctrMult;
 
   // ── Step 3: Impression-limited clicks (float) ─────────────────────────────
   const impClicks = impressions * ctr;
@@ -320,7 +332,7 @@ export function enrichKeyword(
   const rawClicks = kw.action === "No" || budget === 0 ? 0 : Math.min(impClicks, maxClicks);
 
   // ── Step 6: Intent-based CVR (float) ─────────────────────────────────────
-  const baseCvr      = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, opts?.calibratedCvrByCategory);
+  const baseCvr      = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, opts?.calibration);
   const effectiveCvr = Math.max(0.005, Math.min(baseCvr * cvrMult, 0.30));
 
   // ── Step 7: Raw leads (float) ─────────────────────────────────────────────
@@ -393,8 +405,10 @@ export function buildCountryForecasts(
   totalRevenue: number,
   totalLeads: number,
   sqlRate?: number,
-  calibratedCvrByCategory?: Record<string, number>,
+  calib?: CalibrationMap,
+  matchMods?: Record<MatchType, { cpcFactor: number; cvrFactor: number; label?: string }>,
 ): CountryForecast[] {
+  const resolvedMatchMods = matchMods ?? MATCH_TYPE_MODIFIERS;
   const resolvedSqlRate = sqlRate ?? SQL_RATE;
   const seen = new Set<string>();
   const countries = inScope
@@ -411,8 +425,8 @@ export function buildCountryForecasts(
       const b = budgetMap.get(kw.id) ?? 0;
 
       const resolvedMatchType = ((kw as { effectiveMatchType?: string }).effectiveMatchType ?? kw.matchType) as MatchType;
-      const matchMod     = MATCH_TYPE_MODIFIERS[resolvedMatchType] ?? MATCH_TYPE_MODIFIERS.Phrase;
-      const effectiveCpc = computeEffectiveCpc(kw, resolvedMatchType, MATCH_TYPE_MODIFIERS, 1.0);
+      const matchMod     = resolvedMatchMods[resolvedMatchType] ?? resolvedMatchMods.Phrase ?? MATCH_TYPE_MODIFIERS.Phrase;
+      const effectiveCpc = computeEffectiveCpc(kw, resolvedMatchType, resolvedMatchMods, 1.0, calib);
 
       const pressureScore = kw.competitorPressureScore ?? 50;
       const position      = estimatePosition(pressureScore);
@@ -420,12 +434,16 @@ export function buildCountryForecasts(
       const impShare    = computeImpressionShare(pressureScore);
       const impressions = kw.monthlySearches * impShare;
 
-      const ctr       = CTR_BY_POSITION[position] ?? 0.025;
+      const baseCtrC  = CTR_BY_POSITION[position] ?? 0.025;
+      const kwCal     = getCalib(calib, kw);
+      const ctr       = (kwCal && kwCal.actualCtr > 0 && kwCal.ctrConfidence > 0)
+        ? blend(kwCal.actualCtr, baseCtrC, kwCal.ctrConfidence)
+        : baseCtrC;
       const impClicks = impressions * ctr;
       const maxClicks = b > 0 && effectiveCpc > 0 ? b / effectiveCpc : 0;
       const rawClicks = Math.min(impClicks, maxClicks);
 
-      const effectiveCvr    = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, calibratedCvrByCategory);
+      const effectiveCvr    = computeEffectiveCvr(kw, assumptions.lpConversionRate, matchMod, calib);
       const rawLeads        = rawClicks * effectiveCvr;
       const guaranteedLeads = rawClicks > 10 ? Math.max(rawLeads, 1) : rawLeads;
       const cplCap          = b > 0 ? b / B2B_MIN_CPL : Infinity;
@@ -518,7 +536,7 @@ export function computeScenarioForecast(
   assumptions: ProjectAssumptions,
   spec: ScenarioSpec,
   matchMods?: Record<MatchType, { cpcFactor: number; cvrFactor: number; label?: string }>,
-  calibratedCvrByCategory?: Record<string, number>,
+  calib?: CalibrationMap,
 ): ScenarioForecast {
   const enriched = enrich(inScope, budgetMap, assumptions, {
     matchMods:               matchMods ?? MATCH_TYPE_MODIFIERS,
@@ -526,7 +544,7 @@ export function computeScenarioForecast(
     ctrMultiplier:           spec.ctrMultiplier,
     cvrMultiplier:           spec.cvrMultiplier,
     impShareMultiplier:      spec.impShareMultiplier,
-    calibratedCvrByCategory,
+    calibration: calib,
   });
 
   const budget  = enriched.reduce((s, k) => s + k.suggestedMonthlyBudget, 0);
